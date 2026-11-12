@@ -1,0 +1,421 @@
+
+ // ==UserScript==
+ // @name         MTPHomes - Airbnb Extrator
+ // @namespace    laura.mtphomes.airbnb
+ // @version      0.3.0
+ // @description  Captura 5 secções em 4 idiomas sem alterar o Airbnb
+ // @match        https://www.airbnb.pt/hosting/listings/editor/*
+ // @match        https://www.airbnb.com/hosting/listings/editor/*
+ // @grant        none
+ // @run-at       document-idle
+ // ==/UserScript==
+
+(function () {
+  "use strict";
+
+  // =========================================================
+  // 1. IDENTIFICAR O ALOJAMENTO
+  // =========================================================
+
+  // O Airbnb navega sem recarregar. Ler o URL em cada operação evita IDs antigos.
+  // Mantemos IDs como strings: o ID da Moana excede a precisão segura de Number.
+  function lerIdAtual() {
+    return location.pathname.match(/^\/hosting\/listings\/editor\/(\d+)(?:\/|$)/)?.[1] ?? null;
+  }
+  let listingId = lerIdAtual();
+  if (!listingId) return;
+  function sincronizarAlojamento() {
+    const atual = lerIdAtual();
+    if (!atual) throw new Error("Abre o editor de um alojamento.");
+    if (atual !== listingId) {
+      for (const chave of Object.keys(capturas)) delete capturas[chave];
+      listingId = atual;
+      atualizarEstado("Alojamento alterado. Captura novamente as cinco secções.");
+    }
+    return atual;
+  }
+
+  // =========================================================
+  // 2. CONFIGURAR AS SECÇÕES
+  // =========================================================
+
+  // Map associa um nome visível a um identificador interno.
+  // É semelhante ao HashMap que estudas em Java.
+
+  const seccoes = new Map([
+    ["Descrição", "descricao"],
+    ["A sua propriedade", "propriedade"],
+    ["Outras informações a ter em conta", "outras_informacoes"],
+    // Confirmado no Edge em 31/10/2026.
+    ["Acesso dos hóspedes", "acesso"],
+    // Ainda por confirmar no HTML real (H2 esperado).
+    ["Preferências de comunicação", "comunicacao"]
+  ]);
+
+  // Array com os códigos HTML dos quatro idiomas.
+  const idiomas = ["pt", "en", "es", "fr"];
+
+  // =========================================================
+  // 3. GUARDAR AS CAPTURAS TEMPORARIAMENTE
+  // =========================================================
+
+  // Criamos um objeto vazio.
+  // Cada secção capturada será adicionada a este objeto.
+  //
+  // Exemplo:
+  // capturas.descricao = { pt: "...", en: "...", ... }
+
+  const capturas = {};
+
+  // =========================================================
+  // 4. DESCOBRIR QUAL SECÇÃO ESTÁ ABERTA
+  // =========================================================
+
+  function identificarSecao() {
+
+    // Procuramos todos os títulos H2 da página.
+    const titulos = [...document.querySelectorAll("h2")];
+
+    // Procuramos apenas títulos:
+    // - visíveis na interface;
+    // - presentes no nosso Map de secções.
+    const encontrados = titulos.filter(titulo => {
+
+      const texto = titulo.textContent.trim();
+      const visivel = titulo.getClientRects().length > 0;
+
+      return visivel && seccoes.has(texto);
+    });
+
+    // Segurança: só aceitamos exatamente uma secção.
+    if (encontrados.length !== 1) {
+      throw new Error(
+        "Não foi possível identificar uma única secção ativa."
+      );
+    }
+
+    const nome = encontrados[0].textContent.trim();
+
+    return {
+      nome: nome,
+      codigo: seccoes.get(nome)
+    };
+  }
+
+  // =========================================================
+  // 5. LER OS CAMPOS DE TEXTO
+  // =========================================================
+
+  function extrairIdiomas() {
+
+    // Objeto onde guardaremos os quatro textos.
+    const textos = {};
+
+    // for...of percorre cada elemento do array idiomas.
+    for (const idioma of idiomas) {
+
+      // CSS Selector:
+      // textarea[name="pt"]
+      // textarea[name="en"]
+      // etc.
+      //
+      // Procuramos todos os campos com esse idioma.
+      const encontrados = [
+        ...document.querySelectorAll(
+          `textarea[name="${idioma}"]`
+        )
+      ].filter(campo =>
+        campo.getClientRects().length > 0
+      );
+
+      // Não podemos confundir campos de outras partes
+      // da página com o editor pretendido.
+      if (encontrados.length !== 1) {
+        throw new Error(
+          `Esperava 1 campo visível para ${idioma}, ` +
+          `mas encontrei ${encontrados.length}.`
+        );
+      }
+
+      const campo = encontrados[0];
+
+      // Verificamos o padrão de ID descoberto no Airbnb.
+      if (!campo.id.startsWith("listing-description-")) {
+        throw new Error(
+          `O campo ${idioma} não tem o ID esperado.`
+        );
+      }
+
+      // .value lê o conteúdo atual de um textarea.
+      // IMPORTANTE: estamos a ler, não a alterar.
+      const texto = campo.value;
+
+      // Campos vazios são dados válidos: guardamos "" para
+      // idiomas ainda não traduzidos. Nunca inventamos traduções.
+
+      // Guardamos o texto exatamente como foi recebido.
+      textos[idioma] = texto;
+    }
+
+    return textos;
+  }
+
+  // =========================================================
+  // 6. CAPTURAR O PAINEL ABERTO
+  // =========================================================
+
+  function capturarPainel() {
+
+    try {
+      sincronizarAlojamento();
+      if (!/\/details\/description\/?$/.test(location.pathname)) throw new Error("Abre a página de descrições.");
+      // Descobrimos o nome e código da secção ativa.
+      const secao = identificarSecao();
+
+      // Extraímos os quatro textos completos.
+      const textos = extrairIdiomas();
+
+      // Se TODOS os campos estiverem vazios, confirma antes
+      // de tratar como captura válida (evita carregamento incompleto).
+      const vazios = idiomas.filter(idioma => !textos[idioma].trim());
+      if (vazios.length === idiomas.length &&
+          !window.confirm("Os quatro idiomas estão vazios em " +
+            secao.nome + ". Confirmas que é intencional?")) {
+        atualizarEstado("Captura cancelada: verifica o carregamento.");
+        return;
+      }
+
+      capturas[secao.codigo] = textos;
+      atualizarEstado(
+        `Capturada: ${secao.nome} · ${vazios.length}/4 vazios`
+      );
+
+      // Mostramos apenas as contagens na consola.
+      // Não precisamos de imprimir textos completos.
+      console.table(
+        idiomas.map(idioma => ({
+          idioma: idioma,
+          caracteres: textos[idioma].length
+        }))
+      );
+
+    } catch (erro) {
+
+      // Se alguma validação falhar,
+      // apresentamos o erro e não guardamos a captura.
+      atualizarEstado(erro.message);
+
+      console.error(
+        "[MTPHomes Extrator]",
+        erro
+      );
+    }
+  }
+
+  // =========================================================
+  // 7. EXPORTAR TODAS AS CAPTURAS PARA JSON
+  // =========================================================
+
+  function exportarJSON() {
+
+    try { sincronizarAlojamento(); } catch (erro) { atualizarEstado(erro.message); return; }
+    // Object.keys devolve as chaves do objeto capturas.
+    const quantidade = Object.keys(capturas).length;
+
+    // Validar se todas as cinco secções e quatro idiomas
+    // foram realmente lidos. "" é um valor de texto válido.
+    const faltantes = [...seccoes.values()].filter(codigo =>
+      !capturas[codigo] || idiomas.some(
+        idioma => typeof capturas[codigo][idioma] !== "string"
+      )
+    );
+    if (faltantes.length || quantidade !== seccoes.size) {
+      atualizarEstado("Faltam secções: " + faltantes.join(", "));
+      return;
+    }
+
+    // Estrutura final que queremos exportar.
+    const resultado = {
+      listingId: listingId,
+      origem: "airbnb",
+      urlEditor: location.href,
+      urlAirbnb: "https://www.airbnb.pt/rooms/" + listingId,
+      dataExtracao: new Date().toISOString(),
+      seccoes: capturas
+    };
+
+    // JSON.stringify converte um objeto JS em texto JSON.
+    // O número 2 cria uma indentação de dois espaços.
+    const conteudo = JSON.stringify(resultado, null, 2);
+
+    // Blob representa um ficheiro em memória.
+    const ficheiro = new Blob(
+      [conteudo],
+      { type: "application/json;charset=utf-8" }
+    );
+
+    // Criamos um endereço temporário para o ficheiro.
+    const url = URL.createObjectURL(ficheiro);
+
+    // Criamos um link HTML temporário.
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `airbnb_${listingId}_original.json`;
+
+    // Iniciamos o download no computador.
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    // Libertamos o endereço temporário.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    atualizarEstado("JSON exportado com sucesso!");
+  }
+
+  // =========================================================
+  // 8. LIMPAR AS CAPTURAS
+  // =========================================================
+
+  function limparCapturas() {
+
+    // delete remove uma propriedade do objeto.
+    for (const chave of Object.keys(capturas)) {
+      delete capturas[chave];
+    }
+
+    atualizarEstado("Capturas eliminadas da memória.");
+  }
+
+  // =========================================================
+  // 9. CONSTRUIR O PAINEL DO TAMPERMONKEY
+  // =========================================================
+
+  // Este painel é nosso, não pertence ao Airbnb.
+  const painel = document.createElement("div");
+
+  // CSS define a aparência visual do elemento.
+  painel.style.cssText = `
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    width: 260px;
+    padding: 16px;
+    background: #ffffff;
+    color: #222222;
+    border: 1px solid #dddddd;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    z-index: 2147483647;
+  `;
+
+  // Criamos um título para o painel.
+  const titulo = document.createElement("strong");
+
+  titulo.textContent = "MTPHomes · Extrator v0.3";
+
+  titulo.style.cssText = `
+    display: block;
+    margin-bottom: 12px;
+  `;
+
+  painel.appendChild(titulo);
+
+  // Criamos uma área para apresentar mensagens.
+  const estado = document.createElement("div");
+
+  estado.style.cssText = `
+    margin-bottom: 12px;
+    line-height: 1.5;
+    white-space: pre-line;
+  `;
+
+  painel.appendChild(estado);
+
+  // =========================================================
+  // 10. FUNÇÃO PARA CRIAR BOTÕES
+  // =========================================================
+
+  function criarBotao(texto, acao) {
+
+    const botao = document.createElement("button");
+
+    botao.textContent = texto;
+
+    botao.style.cssText = `
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 9px;
+      border: 1px solid #cccccc;
+      border-radius: 6px;
+      background: #f5f5f5;
+      color: #222222;
+      cursor: pointer;
+      font-size: 12px;
+    `;
+
+    // addEventListener associa uma ação ao clique.
+    botao.addEventListener("click", acao);
+
+    painel.appendChild(botao);
+  }
+
+  // =========================================================
+  // 11. ATUALIZAR O ESTADO
+  // =========================================================
+
+  function atualizarEstado(mensagem = "") {
+
+    // Contamos quantas secções foram capturadas.
+    const quantidade = Object.keys(capturas).length;
+
+    // As crases permitem criar template literals,
+    // ou seja, strings com variáveis usando ${}.
+    estado.textContent =
+      `Alojamento: ${listingId}\n` +
+      `Capturas: ${quantidade}/${seccoes.size}\n` +
+      mensagem;
+  }
+
+  // =========================================================
+  // 12. LIGAR OS BOTÕES ÀS FUNÇÕES
+  // =========================================================
+
+  criarBotao(
+    "Capturar painel aberto",
+    capturarPainel
+  );
+
+  criarBotao(
+    "Exportar JSON",
+    exportarJSON
+  );
+
+  criarBotao(
+    "Limpar capturas",
+    limparCapturas
+  );
+
+  // =========================================================
+  // 13. MOSTRAR O PAINEL NA PÁGINA
+  // =========================================================
+
+  document.body.appendChild(painel);
+
+  atualizarEstado("Pronto para capturar.");
+  // Atualiza o painel mesmo sem cliques depois de uma navegação interna.
+  setInterval(() => {
+    try { if (lerIdAtual() && lerIdAtual() !== listingId) sincronizarAlojamento(); }
+    catch (erro) { atualizarEstado(erro.message); }
+  }, 700);
+
+  console.log(
+    `[MTPHomes] Extrator iniciado no alojamento ${listingId}`
+  );
+
+})();
+

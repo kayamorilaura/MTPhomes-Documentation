@@ -1,0 +1,560 @@
+
+// ==UserScript==
+// @name         MTPHomes | Exportar Fotos da Auditoria
+// @namespace    https://mtphomes.pt/
+// @version      1.0
+// @description  Exporta fotografias incompletas em ZIP
+// @match        https://app.avantio.pro/*
+// @grant        GM_xmlhttpRequest
+// @connect      mtphomes.pt
+// @connect      www.mtphomes.pt
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  const S = {
+    urls: [],
+    pendencias: [],
+    total: 0,
+    nome: '',
+    url: '',
+    ocupado: false
+  };
+
+  const $ = (tag, txt = '') => {
+    const e = document.createElement(tag);
+    e.textContent = txt;
+    return e;
+  };
+
+  const panel = $('section');
+  panel.style.cssText = `
+    position:fixed;left:16px;bottom:60px;
+    width:430px;max-width:94vw;max-height:75vh;
+    overflow:auto;z-index:2147483647;
+    background:#132b3a;color:white;
+    padding:14px;border-radius:10px;
+    box-shadow:0 5px 25px #0008;
+    font:13px system-ui;
+  `;
+  panel.hidden = true;
+
+  const title = $('h3', 'MTPHomes · Exportar fotos');
+  const name = $('input');
+  name.placeholder = 'Nome do alojamento';
+
+  const listing = $('input');
+  listing.placeholder = 'URL do anúncio MTPHomes';
+
+  const audit = $('textarea');
+  audit.placeholder =
+    'Cola aqui TODO o relatório do auditor do Avantio';
+  audit.rows = 8;
+
+  for (const x of [name, listing, audit]) {
+    x.style.cssText = `
+      box-sizing:border-box;width:100%;
+      margin:5px 0;padding:8px;border-radius:6px;
+      border:1px solid #6c8392;
+      background:#fff;color:#111;
+    `;
+  }
+
+  const status = $('p', 'Cola o relatório e o link.');
+  const gallery = $('div');
+  gallery.style.cssText =
+    'max-height:36vh;overflow:auto;border-top:1px solid #456;';
+
+  const verify = $('label');
+  const ok = $('input');
+  ok.type = 'checkbox';
+  verify.append(
+    ok,
+    document.createTextNode(
+      ' Confirmei a ordem das fotos com o Avantio'
+    )
+  );
+
+  function btn(label, fn) {
+    const b = $('button', label);
+    b.style.cssText = `
+      background:#325972;color:white;
+      border:1px solid #89a8b9;
+      border-radius:6px;padding:8px;
+      margin:4px 4px 8px 0;cursor:pointer;
+    `;
+    b.onclick = fn;
+    return b;
+  }
+
+  const analyze = btn('Analisar', analisar);
+  const download = btn('Descarregar ZIP', exportar);
+
+  panel.append(
+    title, name, listing, audit,
+    analyze, download, status, verify, gallery
+  );
+
+  const toggle = btn(
+    '📷 Exportar fotos',
+    () => panel.hidden = !panel.hidden
+  );
+
+  toggle.style.cssText += `
+    position:fixed;bottom:16px;left:16px;
+    z-index:2147483647;
+  `;
+
+  document.body.append(toggle, panel);
+
+  function msg(m, err = false) {
+    status.textContent = m;
+    status.style.color = err ? '#ffd09a' : '#e1f1ff';
+  }
+
+  function req(url, type = 'text') {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: type,
+        timeout: 45000,
+        onload: r =>
+          r.status >= 200 && r.status < 300
+            ? resolve(r)
+            : reject(Error(`HTTP ${r.status}`)),
+        onerror: () => reject(Error('Erro de rede')),
+        ontimeout: () => reject(Error('Timeout'))
+      });
+    });
+  }
+
+  // Ler o relatório do auditor
+  function auditoria(txt) {
+    const total = Number(
+      txt.match(/Total\s*:\s*(\d+)/i)?.[1]
+    );
+
+    if (
+      !Number.isInteger(total) ||
+      total < 1 ||
+      total > 500
+    ) {
+      throw Error('Relatório sem Total válido.');
+    }
+
+    const pendencias = [];
+
+    const re =
+      /Foto\s+(\d+)\s*\(ID\s*(\d+)\)\s*[-—–]\s*INCOMPLETA\s*:\s*([^\r\n]+)/gi;
+
+    for (const m of txt.matchAll(re)) {
+      const numero = Number(m[1]);
+      const idAvantio = Number(m[2]);
+
+      if (numero < 1 || numero > total) {
+        throw Error(`Foto ${numero} inválida.`);
+      }
+
+      if (pendencias.some(x => x.numero === numero)) {
+        throw Error(`Foto ${numero} duplicada.`);
+      }
+
+      const campos = m[3]
+        .split(';')
+        .map(x => x.trim())
+        .filter(x =>
+          x && !/^PT vis[ií]vel/i.test(x)
+        );
+
+      pendencias.push({
+        numero,
+        idAvantio,
+        camposEmFalta: campos
+      });
+    }
+
+    if (!pendencias.length) {
+      throw Error(
+        'Não encontrei fotos INCOMPLETAS no relatório.'
+      );
+    }
+
+    return {
+      total,
+      pendencias: pendencias.sort(
+        (a, b) => a.numero - b.numero
+      )
+    };
+  }
+
+  // Encontrar imagens do anúncio
+  function imagens(html, base, total) {
+    const s = html
+      .replace(/\\u002[fF]/g, '/')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/gi, '&');
+
+    const re =
+      /(?:https?:)?\/\/(?:www\.)?mtphomes\.pt\/(?:aluguer|[a-z]{2}\/rentals|[a-z]{2}\/alquiler|[a-z]{2}\/location|rentals)\/fotos\/[^\s"'<>`\\]+?\.(?:jpg|jpeg|png|webp)/gi;
+
+    const grupos = new Map();
+
+    for (const m of s.matchAll(re)) {
+      let url;
+
+      try {
+        url = new URL(m[0], base).href;
+      } catch {
+        continue;
+      }
+
+      const after = new URL(url)
+        .pathname.split('/fotos/')[1];
+
+      if (!after) continue;
+
+      const ps = after.split('/');
+      if (ps.length < 3) continue;
+
+      const grupo = ps.slice(0, 2).join('/');
+
+      if (!grupos.has(grupo)) {
+        grupos.set(grupo, []);
+      }
+
+      const a = grupos.get(grupo);
+      if (!a.includes(url)) a.push(url);
+    }
+
+    const candidatos = [...grupos.values()]
+      .sort((a, b) => b.length - a.length);
+
+    for (const grupo of candidatos) {
+      const grandes = grupo.filter(u =>
+        /\/big[^/]*\.(?:jpe?g|png|webp)$/i.test(
+          new URL(u).pathname
+        )
+      );
+
+      if (grandes.length === total) return grandes;
+      if (grupo.length === total) return grupo;
+    }
+
+    const info = candidatos.map(a =>
+      `${a.length} URLs`
+    ).join(', ');
+
+    throw Error(
+      `Não encontrei exatamente ${total} imagens. ` +
+      `Grupos: ${info || 'nenhum'}. ` +
+      'Não vou adivinhar a ordem.'
+    );
+  }
+
+  // Mostrar miniaturas e permitir trocar a ordem
+  function render() {
+    gallery.replaceChildren();
+
+    for (let i = 0; i < S.urls.length; i++) {
+      const n = i + 1;
+      const url = S.urls[i];
+
+      const p = S.pendencias.find(
+        x => x.numero === n
+      );
+
+      const item = $('div');
+      item.style.cssText = `
+        display:flex;gap:7px;align-items:center;
+        padding:6px;border-bottom:1px solid #456;
+        ${p ? '' : 'opacity:.52;'}
+      `;
+
+      const img = $('img');
+      img.src = url;
+      img.loading = 'lazy';
+      img.style.cssText =
+        'width:72px;height:52px;object-fit:cover;';
+
+      const info = $('div',
+        `#${n}` +
+        (p
+          ? ` · ID ${p.idAvantio} · PENDENTE`
+          : ' · completa')
+      );
+
+      info.style.flex = '1';
+
+      const swap = btn('Trocar', () => {
+        const j = Number(prompt(
+          `Trocar foto ${n} com qual número?`
+        ));
+
+        if (
+          !Number.isInteger(j) ||
+          j < 1 ||
+          j > S.total
+        ) return;
+
+        [S.urls[i], S.urls[j - 1]] =
+          [S.urls[j - 1], S.urls[i]];
+
+        ok.checked = false;
+        render();
+      });
+
+      swap.style.margin = '0';
+      item.append(img, info, swap);
+      gallery.append(item);
+    }
+  }
+
+  async function analisar() {
+    if (S.ocupado) return;
+    S.ocupado = true;
+    ok.checked = false;
+    msg('A analisar...');
+
+    try {
+      const a = auditoria(audit.value);
+
+      S.total = a.total;
+      S.pendencias = a.pendencias;
+      S.nome = name.value.trim() || 'Alojamento';
+      S.url = listing.value.trim();
+
+      if (!/^https:\/\/((www\.)?mtphomes\.pt)\//i.test(S.url)) {
+        throw Error('Indica o URL MTPHomes correto.');
+      }
+
+      const html = (await req(S.url)).responseText;
+
+      S.urls = imagens(html, S.url, S.total);
+      render();
+
+      msg(
+        `${S.urls.length} imagens encontradas. ` +
+        `${S.pendencias.length} incompletas. ` +
+        'Confere a ordem antes de exportar.'
+      );
+
+    } catch (e) {
+      S.urls = [];
+      gallery.replaceChildren();
+      msg(e.message, true);
+    } finally {
+      S.ocupado = false;
+    }
+  }
+
+  // Criador ZIP sem bibliotecas externas
+  const enc = new TextEncoder();
+
+  const u16 = (a, i, n) => {
+    a[i] = n & 255;
+    a[i + 1] = (n >>> 8) & 255;
+  };
+
+  const u32 = (a, i, n) => {
+    u16(a, i, n);
+    u16(a, i + 2, n >>> 16);
+  };
+
+  function crc32(a) {
+    let c = -1;
+
+    for (const b of a) {
+      c ^= b;
+      for (let j = 0; j < 8; j++) {
+        c = (c >>> 1) ^
+          ((c & 1) ? 0xedb88320 : 0);
+      }
+    }
+
+    return (c ^ -1) >>> 0;
+  }
+
+  async function zip(files) {
+    const body = [];
+    const directory = [];
+    let offset = 0;
+    let dirLen = 0;
+
+    for (const f of files) {
+      const name = enc.encode(f.name);
+      const bytes = new Uint8Array(
+        await f.blob.arrayBuffer()
+      );
+
+      const crc = crc32(bytes);
+      const head = new Uint8Array(30 + name.length);
+
+      u32(head, 0, 0x04034b50);
+      u16(head, 4, 20);
+      u16(head, 6, 0x800);
+      u32(head, 14, crc);
+      u32(head, 18, bytes.length);
+      u32(head, 22, bytes.length);
+      u16(head, 26, name.length);
+      head.set(name, 30);
+
+      body.push(head, bytes);
+
+      const dir = new Uint8Array(46 + name.length);
+      u32(dir, 0, 0x02014b50);
+      u16(dir, 4, 20);
+      u16(dir, 6, 20);
+      u16(dir, 8, 0x800);
+      u32(dir, 16, crc);
+      u32(dir, 20, bytes.length);
+      u32(dir, 24, bytes.length);
+      u16(dir, 28, name.length);
+      u32(dir, 42, offset);
+      dir.set(name, 46);
+
+      directory.push(dir);
+      dirLen += dir.length;
+      offset += head.length + bytes.length;
+    }
+
+    const end = new Uint8Array(22);
+    u32(end, 0, 0x06054b50);
+    u16(end, 8, files.length);
+    u16(end, 10, files.length);
+    u32(end, 12, dirLen);
+    u32(end, 16, offset);
+
+    return new Blob(
+      [...body, ...directory, end],
+      { type: 'application/zip' }
+    );
+  }
+
+  async function exportar() {
+    if (S.ocupado) return;
+    S.ocupado = true;
+
+    try {
+      if (S.urls.length !== S.total) {
+        throw Error('Analisa primeiro.');
+      }
+
+      if (!ok.checked) {
+        throw Error(
+          'Confirma a ordem antes de exportar.'
+        );
+      }
+
+      const files = [];
+      const fotos = [];
+
+      for (let i = 0; i < S.pendencias.length; i++) {
+        const p = S.pendencias[i];
+        const url = S.urls[p.numero - 1];
+
+        msg(
+          `A descarregar ${i + 1}/` +
+          `${S.pendencias.length}: foto ${p.numero}`
+        );
+
+        const r = await req(url, 'blob');
+        const blob = r.response instanceof Blob
+          ? r.response
+          : new Blob([r.response]);
+
+        const magic = new Uint8Array(
+          await blob.slice(0, 12).arrayBuffer()
+        );
+
+        const jpg =
+          magic[0] === 255 && magic[1] === 216;
+
+        const png =
+          magic[0] === 137 && magic[1] === 80;
+
+        const webp =
+          String.fromCharCode(
+            ...magic.slice(0, 4)
+          ) === 'RIFF' &&
+          String.fromCharCode(
+            ...magic.slice(8, 12)
+          ) === 'WEBP';
+
+        if (!blob.size || (!jpg && !png && !webp)) {
+          throw Error(
+            `Foto ${p.numero}: imagem inválida.`
+          );
+        }
+
+        const ext = new URL(url).pathname.match(
+          /\.(jpg|jpeg|png|webp)$/i
+        )?.[1]?.toLowerCase() || 'jpg';
+
+        const file =
+          `${String(p.numero).padStart(3, '0')}` +
+          `_ID${p.idAvantio}.` +
+          (ext === 'jpeg' ? 'jpg' : ext);
+
+        files.push({ name: file, blob });
+
+        fotos.push({
+          ...p,
+          url,
+          ficheiro: file
+        });
+      }
+
+      const manifest = {
+        alojamento: S.nome,
+        urlAnuncio: S.url,
+        totalFotos: S.total,
+        ordemConferidaManualmente: true,
+        origem: 'Auditoria Avantio + imagens MTPHomes',
+        fotos
+      };
+
+      files.push({
+        name: 'manifest.json',
+        blob: new Blob(
+          [JSON.stringify(manifest, null, 2)],
+          { type: 'application/json' }
+        )
+      });
+
+      msg('A criar o ZIP...');
+
+      const z = await zip(files);
+      const href = URL.createObjectURL(z);
+      const link = $('a');
+
+      link.href = href;
+
+      link.download = S.nome
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/gi, '_') +
+        '_PENDENTES.zip';
+
+      document.body.append(link);
+      link.click();
+      link.remove();
+
+      setTimeout(
+        () => URL.revokeObjectURL(href),
+        60000
+      );
+
+      msg(
+        `ZIP pronto: ${fotos.length} fotos + manifest.json`
+      );
+
+    } catch (e) {
+      msg(e.message, true);
+    } finally {
+      S.ocupado = false;
+    }
+  }
+})();

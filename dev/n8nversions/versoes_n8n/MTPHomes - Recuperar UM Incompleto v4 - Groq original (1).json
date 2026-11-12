@@ -1,0 +1,748 @@
+{
+  "name": "MTPHomes - Recuperar UM Incompleto v4 - Groq original",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "dataSourceId": {
+          "__rl": true,
+          "value": "3a4e8e19-c14a-8095-90b5-000b0ec5f3cb",
+          "mode": "list",
+          "cachedResultName": "Lista de alterações dos alojamentos",
+          "cachedResultUrl": "https://app.notion.com/p/3a4e8e19c14a80ceb20bf96d9ddb4372"
+        },
+        "returnAll": true,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "key": "Status|select",
+              "condition": "equals",
+              "optionValue": "Incompleto"
+            }
+          ]
+        },
+        "simple": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        256,
+        432
+      ],
+      "id": "ad6da022-2b69-436c-832e-4d0f3332cb84",
+      "name": "Notion - Incompletos",
+      "alwaysOutputData": false,
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.notion.com/v1/blocks/{{ $json.id }}/children?page_size=100",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Ler codigos das paginas",
+      "id": "46ed8f84-46d3-48fb-abeb-4c8b877fa904",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        496,
+        432
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst langs = ['pt', 'es', 'en', 'fr'];\n\nconst tags = {\n  'Balcão': 14,\n  'Cafeteria': 16,\n  \"Child's bedroom\": 20,\n  'Cozinha': 1,\n  'Detalhes': 10,\n  'Exterior': 9,\n  'Fachada': 2,\n  'Garagem': 8,\n  'Jardim': 5,\n  'Outros': 11,\n  'Piscina': 6,\n  'Plano': 18,\n  'Quarto de banho': 4,\n  'Quarto': 3,\n  'Receção': 13,\n  'Resort': 19,\n  'Sala de estar': 12,\n  'Sala de jantar': 15,\n  'Terraço': 7,\n  'Visualizações': 17\n};\n\nconst nonempty = x =>\n  typeof x === 'string' && x.trim().length > 0;\n\nconst id = x =>\n  String(x || '').replace(/-/g, '').toLowerCase();\n\n// CORRIGIDO: Aceita URLs das fotos independentemente\n// da língua usada no site MTPHomes.\n// Exemplos:\n// /aluguer/fotos/3/...\n// /en/rentals/fotos/3/...\n// /es/.../fotos/3/...\n// /fr/.../fotos/3/...\n\nconst regexFoto =\n  /^https:\\/\\/www\\.mtphomes\\.pt\\/(?:[^/?#]+\\/){1,2}fotos\\/3\\//i;\n\nfunction validate(d, page) {\n\n  if (\n    !d ||\n    !['PARCIAL', 'PENDENTE', 'VALIDADO'].includes(d.estado) ||\n    id(d.pageId) !== id(page)\n  ) {\n    throw Error('BLOQUEADO: estado ou pageId divergente.');\n  }\n\n  if (\n    !nonempty(d.alojamento) ||\n    !nonempty(d.urlAnuncio) ||\n    !Number.isInteger(d.totalFotos) ||\n    d.totalFotos < 1 ||\n    !Array.isArray(d.fotos) ||\n    !Array.isArray(d.pendentes)\n  ) {\n    throw Error('BLOQUEADO: estrutura incompleta.');\n  }\n\n  const all = [...d.fotos, ...d.pendentes];\n\n  if (\n    all.length !== d.totalFotos ||\n    new Set(all.map(f => f.numero)).size !== d.totalFotos ||\n    new Set(all.map(f => f.url)).size !== d.totalFotos\n  ) {\n    throw Error('BLOQUEADO: contagem ou fotos duplicadas.');\n  }\n\n  // Validação de números e URLs multilíngues\n  for (const f of all) {\n    if (\n      !Number.isInteger(f.numero) ||\n      f.numero < 1 ||\n      f.numero > d.totalFotos ||\n      typeof f.url !== 'string' ||\n      !regexFoto.test(f.url)\n    ) {\n      throw Error(\n        'BLOQUEADO: numero ou URL de foto invalido.'\n      );\n    }\n  }\n\n  // Validar fotografias já concluídas\n  for (const f of d.fotos) {\n\n    if (\n      f.sucesso !== true ||\n      !nonempty(f.nome) ||\n      f.acessibilidade !== false ||\n      !Number.isInteger(f.etiqueta?.id) ||\n      tags[f.etiqueta?.nome] !== f.etiqueta?.id\n    ) {\n      throw Error('BLOQUEADO: foto concluida invalida.');\n    }\n\n    for (const l of langs) {\n      for (const k of ['title', 'descricao', 'alt']) {\n\n        if (\n          !nonempty(f.traducoes?.[l]?.[k]) ||\n          (k === 'title' && f.traducoes[l][k].length > 70) ||\n          (k === 'alt' && f.traducoes[l][k].length > 125)\n        ) {\n          throw Error(\n            'BLOQUEADO: traducao concluida incompleta.'\n          );\n        }\n      }\n    }\n  }\n\n  if (\n    d.fotosProcessadas !== undefined &&\n    d.fotosProcessadas !== d.fotos.length\n  ) {\n    throw Error(\n      'BLOQUEADO: fotosProcessadas inconsistente.'\n    );\n  }\n\n  if (\n    d.estado === 'VALIDADO' &&\n    d.pendentes.length\n  ) {\n    throw Error(\n      'BLOQUEADO: VALIDADO com pendentes.'\n    );\n  }\n\n  const min = d.pendentes.length\n    ? Math.min(...d.pendentes.map(f => f.numero))\n    : null;\n\n  if (\n    d.proximaFoto !== undefined &&\n    d.proximaFoto !== min\n  ) {\n    throw Error(\n      'BLOQUEADO: proximaFoto inconsistente.'\n    );\n  }\n\n  return d;\n}\n\nfunction payload(d) {\n\n  const text = JSON.stringify(d, null, 2);\n  const parts = [];\n\n  let part = '';\n\n  for (const ch of text) {\n    if (part.length + ch.length > 1900) {\n      parts.push(part);\n      part = '';\n    }\n    part += ch;\n  }\n\n  if (part) parts.push(part);\n\n  if (parts.length > 100) {\n    throw Error(\n      'BLOQUEADO: JSON excede capacidade do bloco Notion.'\n    );\n  }\n\n  return {\n    code: {\n      language: 'json',\n      rich_text: parts.map(content => ({\n        type: 'text',\n        text: { content }\n      }))\n    }\n  };\n}\n\n// Selecionar alojamentos válidos\nconst validos = [];\nconst ignorados = [];\n\nfor (const [i, item] of $input.all().entries()) {\n\n  let pageId = '';\n  let nome = '';\n\n  try {\n\n    const p = $('Notion - Incompletos')\n      .itemMatching(i).json;\n\n    pageId = p.id;\n\n    nome = Object.values(p.properties || {})\n      .find(v => v.type === 'title')\n      ?.title?.map(t =>\n        t.plain_text ?? t.text?.content ?? ''\n      ).join('') || pageId;\n\n    const r = item.json;\n\n    if (!Array.isArray(r.results) || r.has_more) {\n      throw Error('Leitura de blocos incompleta.');\n    }\n\n    const found = [];\n\n    for (const b of r.results) {\n\n      if (b.type !== 'code') continue;\n\n      const text = (b.code.rich_text || [])\n        .map(t =>\n          t.plain_text ?? t.text?.content ?? ''\n        ).join('');\n\n      let d;\n\n      try {\n        d = JSON.parse(text);\n      } catch {\n        if (/\"estado\"\\s*:/.test(text)) {\n          throw Error(\n            'Bloco de fotos com JSON ilegivel.'\n          );\n        }\n        continue;\n      }\n\n      if (\n        d &&\n        typeof d === 'object' &&\n        ('estado' in d || 'fotos' in d)\n      ) {\n\n        d.pendentes ??=\n          d.estado === 'VALIDADO' ? [] : undefined;\n\n        validate(d, pageId);\n\n        found.push({\n          data: d,\n          blockId: b.id,\n          snapshot: text,\n          pageId\n        });\n      }\n    }\n\n    if (found.length !== 1) {\n      throw Error(\n        'Encontrados ' + found.length +\n        ' JSONs de fotos; necessario exatamente 1.'\n      );\n    }\n\n    payload(found[0].data);\n\n    if (found[0].data.pendentes.length === 0) {\n      throw Error(\n        'Sem fotos pendentes; rever status manualmente.'\n      );\n    }\n\n    validos.push(found[0]);\n\n  } catch (e) {\n    ignorados.push({\n      pageId,\n      nome,\n      motivo: e.message\n    });\n  }\n}\n\n// Não aceitar páginas repetidas nem imagens\n// partilhadas entre candidatos\n\nconst owners = new Map();\nconst pages = new Set();\nconst blocked = new Set();\n\nfor (const s of validos) {\n\n  if (pages.has(id(s.pageId))) {\n    blocked.add(s.pageId);\n  }\n\n  pages.add(id(s.pageId));\n\n  for (const f of [\n    ...s.data.fotos,\n    ...s.data.pendentes\n  ]) {\n\n    if (\n      owners.has(f.url) &&\n      owners.get(f.url) !== s.pageId\n    ) {\n      blocked.add(s.pageId);\n      blocked.add(owners.get(f.url));\n    }\n\n    owners.set(f.url, s.pageId);\n  }\n}\n\nconst fila = validos.filter(s => {\n\n  if (!blocked.has(s.pageId)) return true;\n\n  ignorados.push({\n    pageId: s.pageId,\n    nome: s.data.alojamento,\n    motivo:\n      'Pagina duplicada ou URL partilhado entre alojamentos.'\n  });\n\n  return false;\n});\n\n// Prioridade: menor quantidade de fotos pendentes\nfila.sort((a, b) =>\n  a.data.pendentes.length -\n  b.data.pendentes.length ||\n  a.data.alojamento.localeCompare(b.data.alojamento)\n);\n\nconst resumo = {\n  candidatosValidos: fila.length,\n  ignorados,\n  ordem: fila.map(s => ({\n    pageId: s.pageId,\n    nome: s.data.alojamento,\n    pendentes: s.data.pendentes.length\n  }))\n};\n\nif (!fila.length) {\n  return [{\n    json: {\n      selecionado: false,\n      resumo,\n      mensagem:\n        'Nenhum alojamento valido com fotos pendentes. Consultar resumo.ignorados.'\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    ...fila[0],\n    selecionado: true,\n    resumo\n  }\n}];\n"
+      },
+      "name": "Escolher menor alojamento valido",
+      "id": "c2f4772e-6997-4f2f-8a77-f53d50b5b4c1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "selection",
+              "leftValue": "={{ $json.selecionado === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Existe alojamento valido?",
+      "id": "90735167-67a4-4254-9af0-7809be9911e3",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        976,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "  \n/**\n * ============================================================\n * MTPHOMES | PREPARAR FOTOGRAFIA PARA ANÁLISE IA\n * ============================================================\n *\n * Objetivo:\n *  1. Validar o progresso guardado no Notion.\n *  2. Identificar a próxima fotografia pendente.\n *  3. Preparar o prompt multilíngue.\n *  4. Construir o pedido para a API Groq.\n *\n * Idiomas: PT, ES, EN, FR\n * Modelo: qwen/qwen3.8-27b\n *\n * Segurança:\n *  - Não altera fotografias já processadas.\n *  - Não aceita fotografias duplicadas.\n *  - Valida o conteúdo das traduções existentes.\n *  - Aceita URLs MTPHomes em diferentes idiomas.\n * ============================================================\n */\n\n\n// ============================================================\n// 1. CONFIGURAÇÕES\n// ============================================================\n\nconst IDIOMAS = ['pt', 'es', 'en', 'fr'];\n\nconst ETIQUETAS = {\n  'Balcão': 14,\n  'Cafeteria': 16,\n  \"Child's bedroom\": 20,\n  'Cozinha': 1,\n  'Detalhes': 10,\n  'Exterior': 9,\n  'Fachada': 2,\n  'Garagem': 8,\n  'Jardim': 5,\n  'Outros': 11,\n  'Piscina': 6,\n  'Plano': 18,\n  'Quarto de banho': 4,\n  'Quarto': 3,\n  'Receção': 13,\n  'Resort': 19,\n  'Sala de estar': 12,\n  'Sala de jantar': 15,\n  'Terraço': 7,\n  'Visualizações': 17\n};\n\nconst CONFIG_GROQ = {\n  model: 'qwen/qwen3.8-27b',\n  temperature: 0.2,\n  max_completion_tokens: 1500\n};\n\n// Aceita, por exemplo:\n// /aluguer/fotos/3/...\n// /en/rentals/fotos/3/...\n// Outros caminhos de idioma com a mesma estrutura.\n\nconst REGEX_FOTO =\n  /^https:\\/\\/www\\.mtphomes\\.pt\\/(?:[^/?#]+\\/){1,2}fotos\\/3\\//i;\n\n\n// ============================================================\n// 2. FUNÇÕES AUXILIARES\n// ============================================================\n\n// Verifica se uma string contém texto.\nconst nonempty = value =>\n  typeof value === 'string' &&\n  value.trim().length > 0;\n\n// Normaliza IDs do Notion para comparação.\nconst normalizeId = value =>\n  String(value || '')\n    .replace(/-/g, '')\n    .toLowerCase();\n\n// Interrompe a execução com uma mensagem identificável.\nfunction bloquear(motivo) {\n  throw new Error(`BLOQUEADO: ${motivo}`);\n}\n\n\n// ============================================================\n// 3. VALIDAR DADOS DO ALOJAMENTO\n// ============================================================\n\nfunction validate(data, pageId) {\n\n  // ----------------------------------------------------------\n  // 3.1 Estado e identificação\n  // ----------------------------------------------------------\n\n  const estadosPermitidos = [\n    'PARCIAL',\n    'PENDENTE',\n    'VALIDADO'\n  ];\n\n  if (\n    !data ||\n    !estadosPermitidos.includes(data.estado) ||\n    normalizeId(data.pageId) !== normalizeId(pageId)\n  ) {\n    bloquear('estado ou pageId divergente.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.2 Estrutura obrigatória\n  // ----------------------------------------------------------\n\n  if (\n    !nonempty(data.alojamento) ||\n    !nonempty(data.urlAnuncio) ||\n    !Number.isInteger(data.totalFotos) ||\n    data.totalFotos < 1 ||\n    !Array.isArray(data.fotos) ||\n    !Array.isArray(data.pendentes)\n  ) {\n    bloquear('estrutura incompleta.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.3 Contagem e duplicações\n  // ----------------------------------------------------------\n\n  const todasFotos = [\n    ...data.fotos,\n    ...data.pendentes\n  ];\n\n  const numeros = todasFotos.map(foto => foto.numero);\n  const urls = todasFotos.map(foto => foto.url);\n\n  if (\n    todasFotos.length !== data.totalFotos ||\n    new Set(numeros).size !== data.totalFotos ||\n    new Set(urls).size !== data.totalFotos\n  ) {\n    bloquear('contagem ou fotos duplicadas.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.4 Validar número e URL de cada fotografia\n  // ----------------------------------------------------------\n\n  for (const foto of todasFotos) {\n\n    const numeroValido =\n      Number.isInteger(foto.numero) &&\n      foto.numero >= 1 &&\n      foto.numero <= data.totalFotos;\n\n    const urlValida =\n      typeof foto.url === 'string' &&\n      REGEX_FOTO.test(foto.url);\n\n    if (!numeroValido || !urlValida) {\n      bloquear('numero ou URL de foto invalido.');\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.5 Validar fotografias já concluídas\n  // ----------------------------------------------------------\n\n  for (const foto of data.fotos) {\n\n    const etiquetaValida =\n      Number.isInteger(foto.etiqueta?.id) &&\n      ETIQUETAS[foto.etiqueta?.nome] === foto.etiqueta?.id;\n\n    if (\n      foto.sucesso !== true ||\n      !nonempty(foto.nome) ||\n      foto.acessibilidade !== false ||\n      !etiquetaValida\n    ) {\n      bloquear('foto concluida invalida.');\n    }\n\n\n    // --------------------------------------------------------\n    // 3.6 Validar traduções PT / ES / EN / FR\n    // --------------------------------------------------------\n\n    for (const idioma of IDIOMAS) {\n\n      for (const campo of ['title', 'descricao', 'alt']) {\n\n        const valor = foto.traducoes?.[idioma]?.[campo];\n\n        const valido =\n          nonempty(valor) &&\n          (campo !== 'title' || valor.length <= 70) &&\n          (campo !== 'alt' || valor.length <= 125);\n\n        if (!valido) {\n          bloquear('traducao concluida incompleta.');\n        }\n      }\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.7 Validar progresso registado\n  // ----------------------------------------------------------\n\n  if (\n    data.fotosProcessadas !== undefined &&\n    data.fotosProcessadas !== data.fotos.length\n  ) {\n    bloquear('fotosProcessadas inconsistente.');\n  }\n\n  if (\n    data.estado === 'VALIDADO' &&\n    data.pendentes.length > 0\n  ) {\n    bloquear('VALIDADO com pendentes.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.8 Confirmar próxima fotografia\n  // ----------------------------------------------------------\n\n  const proximaFoto = data.pendentes.length\n    ? Math.min(...data.pendentes.map(foto => foto.numero))\n    : null;\n\n  if (\n    data.proximaFoto !== undefined &&\n    data.proximaFoto !== proximaFoto\n  ) {\n    bloquear('proximaFoto inconsistente.');\n  }\n\n  return data;\n}\n\n\n// ============================================================\n// 4. CARREGAR E VALIDAR O PROGRESSO\n// ============================================================\n\n// Criar uma cópia independente dos dados recebidos.\nconst s = JSON.parse(\n  JSON.stringify($input.first().json)\n);\n\n// Validar antes de continuar.\nvalidate(s.data, s.pageId);\n\n\n// ============================================================\n// 5. SELECIONAR A PRÓXIMA FOTOGRAFIA\n// ============================================================\n\n// Ordenar por número crescente.\nconst fotosPendentes = [...s.data.pendentes].sort(\n  (a, b) => a.numero - b.numero\n);\n\n// Selecionar apenas a primeira fotografia pendente.\ns.current = fotosPendentes[0] || null;\n\n// Não enviar pedidos sem fotografia.\nif (!s.current) {\n  bloquear('nenhuma fotografia pendente para analisar.');\n}\n\n// Guardar URL para o pedido Groq.\ns.fotoUrl = s.current.url;\n\n\n// ============================================================\n// 6. PROMPT MULTILÍNGUE\n// ============================================================\n\n// O prompt é definido uma única vez e reutilizado na API.\n\ns.prompt = `\nAnalisa exclusivamente a fotografia de um alojamento turístico.\nGera conteúdo comercial conciso, natural, profissional e factual.\n\nResponde exclusivamente com um objeto JSON válido,\nsem Markdown ou texto adicional, usando esta estrutura:\n\n{\n  \"etiqueta\": \"Quarto\",\n  \"traducoes\": {\n    \"pt\": {\n      \"title\": \"\",\n      \"descricao\": \"\",\n      \"alt\": \"\"\n    },\n    \"es\": {\n      \"title\": \"\",\n      \"descricao\": \"\",\n      \"alt\": \"\"\n    },\n    \"en\": {\n      \"title\": \"\",\n      \"descricao\": \"\",\n      \"alt\": \"\"\n    },\n    \"fr\": {\n      \"title\": \"\",\n      \"descricao\": \"\",\n      \"alt\": \"\"\n    }\n  }\n}\n\nETIQUETA:\n\nEscolhe exatamente uma destas opções:\n\n${JSON.stringify(Object.keys(ETIQUETAS))}\n\nUsa a etiqueta exatamente como escrita, sem a traduzir.\nEscolhe a que melhor representa o elemento principal.\nSe nenhuma for adequada, usa \"Outros\".\n\nIDIOMAS E CAMPOS:\n\n- pt: português europeu.\n- es: espanhol de Espanha.\n- en: inglês britânico.\n- fr: francês natural.\n\n- title:\n  Título natural adequado a um anúncio turístico.\n  Máximo de 70 caracteres.\n\n- descricao:\n  Uma única frase, idealmente com 10–25 palavras,\n  acolhedora e profissional.\n  Destaca uma experiência ou benefício sem repetir\n  o título ou o alt.\n\n- alt:\n  Descrição objetiva e acessível dos elementos visíveis.\n  Máximo de 125 caracteres.\n\nREGRAS:\n\n1. Mantém o mesmo significado factual nos quatro idiomas.\n\n2. Preenche os 12 campos com strings não vazias.\n\n3. Não inventes elementos, características ou comodidades\n   não visíveis ou confirmados.\n\n4. Não menciones cores em nenhum campo ou idioma.\n   Evita nomes de cores e referências cromáticas\n   como \"claro\", \"escuro\" ou \"colorido\".\n\n5. Evita repetições, enumerações e exageros comerciais.\n\n6. Baseia-te apenas nesta fotografia.\n   Nunca reutilizes conteúdo de outras fotografias.\n\nDevolve apenas o objeto JSON final.\n`.trim();\n\n\n// ============================================================\n// 7. CONSTRUIR PEDIDO GROQ\n// ============================================================\n\ns.groqBody = {\n\n  model: CONFIG_GROQ.model,\n\n  messages: [\n    {\n      role: 'user',\n\n      content: [\n        {\n          type: 'text',\n          text: s.prompt\n        },\n        {\n          type: 'image_url',\n          image_url: {\n            url: s.fotoUrl\n          }\n        }\n      ]\n    }\n  ],\n\n  response_format: {\n    type: 'json_object'\n  },\n\n  temperature: CONFIG_GROQ.temperature,\n\n  max_completion_tokens:\n    CONFIG_GROQ.max_completion_tokens\n};\n\n\n// ============================================================\n// 8. OUTPUT PARA O PRÓXIMO NÓ\n// ============================================================\n\nreturn [\n  {\n    json: s\n  }\n];\n"
+      },
+      "name": "Preparar foto",
+      "id": "63114d4a-ecfc-443d-bb90-2bb436026431",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Ha foto pendente?",
+              "leftValue": "={{ $json.current !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Ha foto pendente?",
+      "id": "6cb825a1-7d5f-4721-b09c-3d0060f932e1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1456,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.groqBody }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1936,
+        432
+      ],
+      "id": "fa1f7f94-9d08-466f-aa4c-1914df0145b0",
+      "name": "GROQ",
+      "retryOnFail": false,
+      "alwaysOutputData": false,
+      "credentials": {
+        "httpMultipleHeadersAuth": {
+          "id": "MZ9VrwKh50I0fmrs",
+          "name": "Multiple Headers Auth account 2"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n/**\n * ============================================================\n * MTPHOMES | INCORPORAR RESPOSTA GROQ\n * ============================================================\n *\n * Objetivo:\n *  1. Recuperar os dados do nó Preparar foto.\n *  2. Ler e validar a resposta do Groq.\n *  3. Incorporar a fotografia concluída.\n *  4. Atualizar o progresso do alojamento.\n *  5. Preservar o progresso em caso de erro.\n *  6. Validar o JSON antes de o enviar ao próximo nó.\n *\n * Idiomas: PT, ES, EN, FR\n *\n * Segurança:\n *  - Não elimina fotografias concluídas.\n *  - Não aceita fotografias duplicadas.\n *  - Confirma número e URL da fotografia atual.\n *  - Valida os quatro idiomas.\n *  - Aceita URLs MTPHomes multilíngues.\n *  - Regista erros sem descartar o progresso.\n * ============================================================\n */\n\n\n// ============================================================\n// 1. CONFIGURAÇÕES\n// ============================================================\n\nconst IDIOMAS = ['pt', 'es', 'en', 'fr'];\n\nconst CAMPOS = ['title', 'descricao', 'alt'];\n\nconst LIMITES = {\n  title: 70,\n  alt: 125,\n  erro: 1500\n};\n\nconst ETIQUETAS = {\n  'Balcão': 14,\n  'Cafeteria': 16,\n  \"Child's bedroom\": 20,\n  'Cozinha': 1,\n  'Detalhes': 10,\n  'Exterior': 9,\n  'Fachada': 2,\n  'Garagem': 8,\n  'Jardim': 5,\n  'Outros': 11,\n  'Piscina': 6,\n  'Plano': 18,\n  'Quarto de banho': 4,\n  'Quarto': 3,\n  'Receção': 13,\n  'Resort': 19,\n  'Sala de estar': 12,\n  'Sala de jantar': 15,\n  'Terraço': 7,\n  'Visualizações': 17\n};\n\n// Aceita URLs de fotografias independentemente\n// da língua utilizada no site.\n//\n// Exemplos:\n// /aluguer/fotos/3/...\n// /en/rentals/fotos/3/...\n\nconst REGEX_FOTO =\n  /^https:\\/\\/www\\.mtphomes\\.pt\\/(?:[^/?#]+\\/){1,2}fotos\\/3\\//i;\n\n\n// ============================================================\n// 2. FUNÇÕES AUXILIARES\n// ============================================================\n\n// Verificar se existe texto válido.\nconst nonempty = value =>\n  typeof value === 'string' &&\n  value.trim().length > 0;\n\n// Normalizar IDs do Notion.\nconst normalizeId = value =>\n  String(value || '')\n    .replace(/-/g, '')\n    .toLowerCase();\n\n// Interromper quando uma validação falhar.\nfunction bloquear(motivo) {\n  throw new Error(`BLOQUEADO: ${motivo}`);\n}\n\n// Converter erros para texto.\nfunction mensagemErro(error) {\n  return (\n    error instanceof Error\n      ? error.message\n      : String(error)\n  ).slice(0, LIMITES.erro);\n}\n\n\n// ============================================================\n// 3. VALIDAR ESTRUTURA DO ALOJAMENTO\n// ============================================================\n\nfunction validate(data, pageId) {\n\n  // ----------------------------------------------------------\n  // 3.1 Estado e identificação\n  // ----------------------------------------------------------\n\n  const estadosPermitidos = [\n    'PARCIAL',\n    'PENDENTE',\n    'VALIDADO'\n  ];\n\n  if (\n    !data ||\n    !estadosPermitidos.includes(data.estado) ||\n    normalizeId(data.pageId) !== normalizeId(pageId)\n  ) {\n    bloquear('estado ou pageId divergente.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.2 Estrutura obrigatória\n  // ----------------------------------------------------------\n\n  if (\n    !nonempty(data.alojamento) ||\n    !nonempty(data.urlAnuncio) ||\n    !Number.isInteger(data.totalFotos) ||\n    data.totalFotos < 1 ||\n    !Array.isArray(data.fotos) ||\n    !Array.isArray(data.pendentes)\n  ) {\n    bloquear('estrutura incompleta.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.3 Contagem e duplicações\n  // ----------------------------------------------------------\n\n  const todasFotos = [\n    ...data.fotos,\n    ...data.pendentes\n  ];\n\n  const numeros = todasFotos.map(foto => foto.numero);\n  const urls = todasFotos.map(foto => foto.url);\n\n  if (\n    todasFotos.length !== data.totalFotos ||\n    new Set(numeros).size !== data.totalFotos ||\n    new Set(urls).size !== data.totalFotos\n  ) {\n    bloquear('contagem ou fotos duplicadas.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.4 Validar números e URLs multilíngues\n  // ----------------------------------------------------------\n\n  for (const foto of todasFotos) {\n\n    const numeroValido =\n      Number.isInteger(foto.numero) &&\n      foto.numero >= 1 &&\n      foto.numero <= data.totalFotos;\n\n    const urlValida =\n      typeof foto.url === 'string' &&\n      REGEX_FOTO.test(foto.url);\n\n    if (!numeroValido || !urlValida) {\n      bloquear('numero ou URL de foto invalido.');\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.5 Validar fotografias concluídas\n  // ----------------------------------------------------------\n\n  for (const foto of data.fotos) {\n\n    const etiquetaValida =\n      Number.isInteger(foto.etiqueta?.id) &&\n      ETIQUETAS[foto.etiqueta?.nome] === foto.etiqueta?.id;\n\n    if (\n      foto.sucesso !== true ||\n      !nonempty(foto.nome) ||\n      foto.acessibilidade !== false ||\n      !etiquetaValida\n    ) {\n      bloquear('foto concluida invalida.');\n    }\n\n\n    // --------------------------------------------------------\n    // 3.6 Validar traduções existentes\n    // --------------------------------------------------------\n\n    for (const idioma of IDIOMAS) {\n\n      for (const campo of CAMPOS) {\n\n        const valor = foto.traducoes?.[idioma]?.[campo];\n\n        const valido =\n          nonempty(valor) &&\n          (\n            campo !== 'title' ||\n            valor.length <= LIMITES.title\n          ) &&\n          (\n            campo !== 'alt' ||\n            valor.length <= LIMITES.alt\n          );\n\n        if (!valido) {\n          bloquear('traducao concluida incompleta.');\n        }\n      }\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 3.7 Validar progresso\n  // ----------------------------------------------------------\n\n  if (\n    data.fotosProcessadas !== undefined &&\n    data.fotosProcessadas !== data.fotos.length\n  ) {\n    bloquear('fotosProcessadas inconsistente.');\n  }\n\n  if (\n    data.estado === 'VALIDADO' &&\n    data.pendentes.length > 0\n  ) {\n    bloquear('VALIDADO com pendentes.');\n  }\n\n  const proximaFoto = data.pendentes.length\n    ? Math.min(...data.pendentes.map(foto => foto.numero))\n    : null;\n\n  if (\n    data.proximaFoto !== undefined &&\n    data.proximaFoto !== proximaFoto\n  ) {\n    bloquear('proximaFoto inconsistente.');\n  }\n\n  return data;\n}\n\n\n// ============================================================\n// 4. LER E INTERPRETAR RESPOSTA GROQ\n// ============================================================\n\nfunction lerRespostaGroq(resposta) {\n\n  // ----------------------------------------------------------\n  // 4.1 Identificar erros da API\n  // ----------------------------------------------------------\n\n  if (resposta.error) {\n\n    const erro = typeof resposta.error === 'string'\n      ? resposta.error\n      : JSON.stringify(resposta.error);\n\n    throw new Error(erro);\n  }\n\n\n  // ----------------------------------------------------------\n  // 4.2 Recuperar conteúdo gerado\n  // ----------------------------------------------------------\n\n  const raw = resposta.choices?.[0]?.message?.content;\n\n  if (!nonempty(raw)) {\n    throw new Error('Groq sem conteudo.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 4.3 Remover Markdown, caso exista\n  // ----------------------------------------------------------\n\n  const jsonLimpo = raw\n    .trim()\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```$/, '');\n\n\n  // ----------------------------------------------------------\n  // 4.4 Interpretar JSON\n  // ----------------------------------------------------------\n\n  let resultado;\n\n  try {\n    resultado = JSON.parse(jsonLimpo);\n  } catch {\n    throw new Error('Groq devolveu JSON invalido.');\n  }\n\n  if (\n    !resultado ||\n    typeof resultado !== 'object' ||\n    Array.isArray(resultado)\n  ) {\n    throw new Error('Estrutura da resposta Groq invalida.');\n  }\n\n  return resultado;\n}\n\n\n// ============================================================\n// 5. VALIDAR ETIQUETA E TRADUÇÕES\n// ============================================================\n\nfunction validarRespostaIA(resultado) {\n\n  // ----------------------------------------------------------\n  // 5.1 Validar etiqueta\n  // ----------------------------------------------------------\n\n  const nomeEtiqueta = resultado.etiqueta;\n\n  if (\n    !Object.prototype.hasOwnProperty.call(\n      ETIQUETAS,\n      nomeEtiqueta\n    )\n  ) {\n    throw new Error('Etiqueta invalida.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.2 Preparar traduções\n  // ----------------------------------------------------------\n\n  const traducoes = {};\n\n  for (const idioma of IDIOMAS) {\n\n    const original = resultado.traducoes?.[idioma] || {};\n\n    // Aceitar nomes alternativos devolvidos pela IA.\n    const valores = {\n      title: original.title ?? original.titulo,\n\n      descricao:\n        original.descricao ??\n        original.description ??\n        original.descripcion,\n\n      alt: original.alt\n    };\n\n    traducoes[idioma] = {};\n\n\n    // --------------------------------------------------------\n    // 5.3 Verificar os três campos\n    // --------------------------------------------------------\n\n    for (const campo of CAMPOS) {\n\n      const valor = valores[campo];\n\n      if (!nonempty(valor)) {\n        throw new Error(\n          `Campo invalido: ${idioma}.${campo}`\n        );\n      }\n\n      const texto = valor.trim();\n\n      if (\n        campo === 'title' &&\n        texto.length > LIMITES.title\n      ) {\n        throw new Error(\n          `Titulo excede ${LIMITES.title} caracteres: ${idioma}`\n        );\n      }\n\n      if (\n        campo === 'alt' &&\n        texto.length > LIMITES.alt\n      ) {\n        throw new Error(\n          `ALT excede ${LIMITES.alt} caracteres: ${idioma}`\n        );\n      }\n\n      traducoes[idioma][campo] = texto;\n    }\n  }\n\n  return {\n    nomeEtiqueta,\n    traducoes\n  };\n}\n\n\n// ============================================================\n// 6. INCORPORAR FOTOGRAFIA CONCLUÍDA\n// ============================================================\n\nfunction incorporarFotografia(s, resultado) {\n\n  const atual = s.current;\n\n  // ----------------------------------------------------------\n  // 6.1 Confirmar fotografia atual\n  // ----------------------------------------------------------\n\n  if (\n    !atual ||\n    !Number.isInteger(atual.numero) ||\n    !nonempty(atual.url)\n  ) {\n    bloquear('fotografia atual invalida.');\n  }\n\n  // Verificar se ainda está na lista de pendentes.\n  const existePendente = s.data.pendentes.some(\n    foto =>\n      foto.numero === atual.numero &&\n      foto.url === atual.url\n  );\n\n  if (!existePendente) {\n    bloquear('fotografia atual nao encontrada nos pendentes.');\n  }\n\n  // Impedir a incorporação da mesma fotografia duas vezes.\n  const jaProcessada = s.data.fotos.some(\n    foto =>\n      foto.numero === atual.numero ||\n      foto.url === atual.url\n  );\n\n  if (jaProcessada) {\n    bloquear('fotografia ja processada.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 6.2 Construir objeto da fotografia\n  // ----------------------------------------------------------\n\n  const novaFoto = {\n    numero: atual.numero,\n    url: atual.url,\n\n    nome: resultado.traducoes.pt.title,\n\n    etiqueta: {\n      nome: resultado.nomeEtiqueta,\n      id: ETIQUETAS[resultado.nomeEtiqueta]\n    },\n\n    acessibilidade: false,\n\n    traducoes: resultado.traducoes,\n\n    sucesso: true\n  };\n\n\n  // ----------------------------------------------------------\n  // 6.3 Guardar fotografia concluída\n  // ----------------------------------------------------------\n\n  s.data.fotos.push(novaFoto);\n\n  // Manter ordem numérica.\n  s.data.fotos.sort(\n    (a, b) => a.numero - b.numero\n  );\n\n\n  // ----------------------------------------------------------\n  // 6.4 Remover fotografia dos pendentes\n  // ----------------------------------------------------------\n\n  s.data.pendentes = s.data.pendentes.filter(\n    foto => foto.numero !== atual.numero\n  );\n\n  return s;\n}\n\n\n// ============================================================\n// 7. ATUALIZAR PROGRESSO DO ALOJAMENTO\n// ============================================================\n\nfunction atualizarProgresso(data) {\n\n  // Quantidade de fotografias concluídas.\n  data.fotosProcessadas = data.fotos.length;\n\n  // Identificar a próxima fotografia.\n  data.proximaFoto = data.pendentes.length\n    ? Math.min(\n        ...data.pendentes.map(foto => foto.numero)\n      )\n    : null;\n\n  // Definir estado conforme as fotografias restantes.\n  data.estado = data.pendentes.length\n    ? 'PARCIAL'\n    : 'VALIDADO';\n\n  return data;\n}\n\n\n// ============================================================\n// 8. RECUPERAR DADOS DOS NÓS ANTERIORES\n// ============================================================\n\n// Copiar os dados preparados anteriormente.\nconst s = JSON.parse(\n  JSON.stringify($('Preparar foto').item.json)\n);\n\n// Resposta recebida do Groq.\nconst respostaGroq = $input.first().json;\n\n// Validar o progresso antes de incorporar alterações.\nvalidate(s.data, s.pageId);\n\n\n// ============================================================\n// 9. PROCESSAR RESPOSTA DO GROQ\n// ============================================================\n\ntry {\n\n  // 9.1 Ler resposta do Groq.\n  const respostaIA = lerRespostaGroq(respostaGroq);\n\n  // 9.2 Validar etiqueta e traduções.\n  const resultado = validarRespostaIA(respostaIA);\n\n  // 9.3 Incorporar fotografia ao JSON.\n  incorporarFotografia(s, resultado);\n\n  // 9.4 Marcar processamento bem-sucedido.\n  s.stop = false;\n\n  // 9.5 Remover erro anterior, se existir.\n  delete s.data.erro;\n\n} catch (error) {\n\n  // ----------------------------------------------------------\n  // ERRO: preservar o progresso existente\n  // ----------------------------------------------------------\n\n  s.stop = true;\n\n  s.data.erro = {\n    foto: s.current?.numero ?? null,\n    mensagem: mensagemErro(error)\n  };\n}\n\n\n// ============================================================\n// 10. ATUALIZAR E VALIDAR RESULTADO FINAL\n// ============================================================\n\n// Atualizar contagem, próxima foto e estado.\natualizarProgresso(s.data);\n\n// Confirmar integridade do JSON.\nvalidate(s.data, s.pageId);\n\n\n// ============================================================\n// 11. OUTPUT PARA O PRÓXIMO NÓ\n// ============================================================\n\nreturn [\n  {\n    json: s\n  }\n];\n"
+      },
+      "name": "Incorporar resposta",
+      "id": "9b7fdac1-3972-474c-9962-e47c82c87597",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1936,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n/**\n * ============================================================\n * MTPHOMES | PREPARAR PAYLOAD PARA NOTION\n * ============================================================\n *\n * Objetivo:\n *  1. Receber o JSON atualizado do alojamento.\n *  2. Validar a integridade das fotografias.\n *  3. Reconhecer URLs MTPHomes multilíngues.\n *  4. Simplificar o JSON quando estiver VALIDADO.\n *  5. Dividir o conteúdo para os blocos do Notion.\n *  6. Preparar o payload para atualização.\n *\n * Segurança:\n *  - Não permite fotografias duplicadas.\n *  - Não elimina progresso de alojamentos parciais.\n *  - Verifica etiquetas e traduções.\n *  - Confirma o progresso antes da gravação.\n *  - Respeita os limites dos rich_text do Notion.\n * ============================================================\n */\n\n\n// ============================================================\n// 1. CONFIGURAÇÕES\n// ============================================================\n\nconst CONFIG = {\n  idiomas: ['pt', 'es', 'en', 'fr'],\n\n  estadosPermitidos: [\n    'PARCIAL',\n    'PENDENTE',\n    'VALIDADO'\n  ],\n\n  limiteTitulo: 70,\n  limiteAlt: 125,\n\n  // Limite conservador por segmento rich_text.\n  caracteresPorParte: 1900,\n\n  // Máximo de segmentos num único bloco.\n  maxPartes: 100\n};\n\n\n// ============================================================\n// 2. ETIQUETAS AVANTIO\n// ============================================================\n\nconst ETIQUETAS = {\n  'Balcão': 14,\n  'Cafeteria': 16,\n  \"Child's bedroom\": 20,\n  'Cozinha': 1,\n  'Detalhes': 10,\n  'Exterior': 9,\n  'Fachada': 2,\n  'Garagem': 8,\n  'Jardim': 5,\n  'Outros': 11,\n  'Piscina': 6,\n  'Plano': 18,\n  'Quarto de banho': 4,\n  'Quarto': 3,\n  'Receção': 13,\n  'Resort': 19,\n  'Sala de estar': 12,\n  'Sala de jantar': 15,\n  'Terraço': 7,\n  'Visualizações': 17\n};\n\n\n// ============================================================\n// 3. VALIDAÇÃO DAS URLs\n// ============================================================\n\n/**\n * Aceita os caminhos multilíngues da MTPHomes:\n *\n * PT: /aluguer/fotos/3/...\n * EN: /en/rentals/fotos/3/...\n * ES: /es/.../fotos/3/...\n * FR: /fr/.../fotos/3/...\n *\n * Mantém a exigência do domínio oficial e HTTPS.\n */\n\nconst REGEX_FOTO =\n  /^https:\\/\\/www\\.mtphomes\\.pt\\/(?:[^/?#]+\\/){1,2}fotos\\/3\\//i;\n\n\n// ============================================================\n// 4. FUNÇÕES AUXILIARES\n// ============================================================\n\n// Verificar se uma string contém texto.\nfunction nonempty(value) {\n  return (\n    typeof value === 'string' &&\n    value.trim().length > 0\n  );\n}\n\n// Normalizar IDs do Notion para comparação.\nfunction normalizeId(value) {\n  return String(value || '')\n    .replace(/-/g, '')\n    .toLowerCase();\n}\n\n// Interromper execução quando uma validação falhar.\nfunction bloquear(motivo) {\n  throw new Error(`BLOQUEADO: ${motivo}`);\n}\n\n\n// ============================================================\n// 5. VALIDAR ESTRUTURA DO ALOJAMENTO\n// ============================================================\n\nfunction validate(data, pageId) {\n\n  // ----------------------------------------------------------\n  // 5.1 Estado e identificação\n  // ----------------------------------------------------------\n\n  if (\n    !data ||\n    !CONFIG.estadosPermitidos.includes(data.estado) ||\n    normalizeId(data.pageId) !== normalizeId(pageId)\n  ) {\n    bloquear('estado ou pageId divergente.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.2 Estrutura obrigatória\n  // ----------------------------------------------------------\n\n  if (\n    !nonempty(data.alojamento) ||\n    !nonempty(data.urlAnuncio) ||\n    !Number.isInteger(data.totalFotos) ||\n    data.totalFotos < 1 ||\n    !Array.isArray(data.fotos) ||\n    !Array.isArray(data.pendentes)\n  ) {\n    bloquear('estrutura incompleta.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.3 Contagem e duplicações\n  // ----------------------------------------------------------\n\n  const todasFotos = [\n    ...data.fotos,\n    ...data.pendentes\n  ];\n\n  const numeros = todasFotos.map(\n    foto => foto?.numero\n  );\n\n  const urls = todasFotos.map(\n    foto => foto?.url\n  );\n\n  if (\n    todasFotos.length !== data.totalFotos ||\n    new Set(numeros).size !== data.totalFotos ||\n    new Set(urls).size !== data.totalFotos\n  ) {\n    bloquear('contagem ou fotos duplicadas.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.4 Validar números e URLs das fotografias\n  // ----------------------------------------------------------\n\n  for (const foto of todasFotos) {\n\n    const numeroValido =\n      Number.isInteger(foto?.numero) &&\n      foto.numero >= 1 &&\n      foto.numero <= data.totalFotos;\n\n    const urlValida =\n      typeof foto?.url === 'string' &&\n      REGEX_FOTO.test(foto.url);\n\n    if (!numeroValido || !urlValida) {\n      bloquear(\n        'numero ou URL de foto invalido' +\n        ` (foto ${foto?.numero ?? 'desconhecida'}).`\n      );\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.5 Validar fotografias concluídas\n  // ----------------------------------------------------------\n\n  for (const foto of data.fotos) {\n\n    const etiquetaValida =\n      Number.isInteger(foto.etiqueta?.id) &&\n      ETIQUETAS[foto.etiqueta?.nome] ===\n        foto.etiqueta?.id;\n\n    if (\n      foto.sucesso !== true ||\n      !nonempty(foto.nome) ||\n      foto.acessibilidade !== false ||\n      !etiquetaValida\n    ) {\n      bloquear(\n        `foto concluida invalida: ${foto.numero}.`\n      );\n    }\n\n\n    // --------------------------------------------------------\n    // 5.6 Validar traduções PT / ES / EN / FR\n    // --------------------------------------------------------\n\n    for (const idioma of CONFIG.idiomas) {\n\n      for (const campo of [\n        'title',\n        'descricao',\n        'alt'\n      ]) {\n\n        const valor =\n          foto.traducoes?.[idioma]?.[campo];\n\n        const valido =\n          nonempty(valor) &&\n          (\n            campo !== 'title' ||\n            valor.length <= CONFIG.limiteTitulo\n          ) &&\n          (\n            campo !== 'alt' ||\n            valor.length <= CONFIG.limiteAlt\n          );\n\n        if (!valido) {\n          bloquear(\n            `traducao invalida: foto ${foto.numero}, ` +\n            `${idioma}.${campo}.`\n          );\n        }\n      }\n    }\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.7 Validar quantidade processada\n  // ----------------------------------------------------------\n\n  if (\n    data.fotosProcessadas !== undefined &&\n    data.fotosProcessadas !== data.fotos.length\n  ) {\n    bloquear('fotosProcessadas inconsistente.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.8 Verificar estado VALIDADO\n  // ----------------------------------------------------------\n\n  if (\n    data.estado === 'VALIDADO' &&\n    data.pendentes.length > 0\n  ) {\n    bloquear('VALIDADO com pendentes.');\n  }\n\n\n  // ----------------------------------------------------------\n  // 5.9 Verificar próxima fotografia\n  // ----------------------------------------------------------\n\n  const proximaFoto = data.pendentes.length\n    ? Math.min(\n        ...data.pendentes.map(foto => foto.numero)\n      )\n    : null;\n\n  if (\n    data.proximaFoto !== undefined &&\n    data.proximaFoto !== proximaFoto\n  ) {\n    bloquear('proximaFoto inconsistente.');\n  }\n\n  return data;\n}\n\n\n// ============================================================\n// 6. PREPARAR JSON FINAL\n// ============================================================\n\nfunction prepararJsonFinal(data) {\n\n  // ----------------------------------------------------------\n  // 6.1 Alojamento ainda possui fotografias pendentes\n  // ----------------------------------------------------------\n\n  if (data.pendentes.length > 0) {\n\n    // Preservar todos os dados:\n    // - fotos concluídas\n    // - fotos pendentes\n    // - estado\n    // - progresso\n    // - erro de execução, caso exista\n\n    return data;\n  }\n\n\n  // ----------------------------------------------------------\n  // 6.2 Todas as fotografias foram concluídas\n  // ----------------------------------------------------------\n\n  // Gerar JSON simplificado para o estado VALIDADO.\n  // Mantém o formato utilizado pelo workflow original.\n\n  return {\n    estado: 'VALIDADO',\n\n    alojamento: data.alojamento,\n\n    pageId: data.pageId,\n\n    urlAnuncio: data.urlAnuncio,\n\n    totalFotos: data.totalFotos,\n\n    fotos: data.fotos\n  };\n}\n\n\n// ============================================================\n// 7. DIVIDIR JSON PARA O NOTION\n// ============================================================\n\nfunction dividirTexto(texto) {\n\n  const partes = [];\n\n  let parteAtual = '';\n\n  for (const caractere of texto) {\n\n    // Usar o comprimento real do caractere em JavaScript.\n    // Isto evita ultrapassar o limite por causa de emojis\n    // ou outros caracteres Unicode.\n\n    if (\n      parteAtual.length + caractere.length >\n      CONFIG.caracteresPorParte\n    ) {\n\n      partes.push(parteAtual);\n      parteAtual = '';\n    }\n\n    parteAtual += caractere;\n  }\n\n  if (parteAtual.length > 0) {\n    partes.push(parteAtual);\n  }\n\n  if (partes.length > CONFIG.maxPartes) {\n    bloquear(\n      'JSON excede capacidade do bloco Notion.'\n    );\n  }\n\n  return partes;\n}\n\n\n// ============================================================\n// 8. CONSTRUIR PAYLOAD NOTION\n// ============================================================\n\nfunction construirPayload(data) {\n\n  // Converter o alojamento para JSON formatado.\n  const texto = JSON.stringify(data, null, 2);\n\n  // Dividir em segmentos compatíveis com o Notion.\n  const partes = dividirTexto(texto);\n\n  // Construir a estrutura do bloco de código.\n  return {\n    code: {\n      language: 'json',\n\n      rich_text: partes.map(content => ({\n        type: 'text',\n\n        text: {\n          content\n        }\n      }))\n    }\n  };\n}\n\n\n// ============================================================\n// 9. RECEBER DADOS DO NÓ ANTERIOR\n// ============================================================\n\n// Criar cópia independente dos dados recebidos.\nconst s = JSON.parse(\n  JSON.stringify($input.first().json)\n);\n\n\n// ============================================================\n// 10. VALIDAR ANTES DE PREPARAR O PAYLOAD\n// ============================================================\n\n// Não permitir gravação de dados inconsistentes.\nvalidate(s.data, s.pageId);\n\n\n// ============================================================\n// 11. PREPARAR E INCORPORAR O PAYLOAD\n// ============================================================\n\n// Gerar JSON final.\n// PARCIAL: preservar progresso completo.\n// VALIDADO: utilizar estrutura simplificada.\ns.data = prepararJsonFinal(s.data);\n\n// Construir payload para atualização do bloco Notion.\ns.payload = construirPayload(s.data);\n\n\n// ============================================================\n// 12. OUTPUT PARA O PRÓXIMO NÓ\n// ============================================================\n\nreturn [\n  {\n    json: s\n  }\n];\n"
+      },
+      "name": "Preparar gravacao",
+      "id": "8317449e-6152-41dd-afbc-13c1f0e3284b",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1696,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.notion.com/v1/blocks/{{ $json.blockId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Verificar bloco antes de gravar",
+      "id": "2c6f62f8-f3fc-49be-aec4-3b22bd6e1dcd",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1456,
+        672
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst s = $('Preparar gravacao').item.json;\nconst b = $input.first().json;\n\nconst partes = b.code?.rich_text;\nconst atual = Array.isArray(partes)\n  ? partes.map(t => t.plain_text ?? t.text?.content ?? '').join('')\n  : null;\n\nconst esperado = s.snapshot;\nconst causas = [];\n\nif (b.id !== s.blockId)\n  causas.push('ID_DIFERENTE');\n\nif (b.archived)\n  causas.push('BLOCO_ARQUIVADO');\n\nif (b.in_trash)\n  causas.push('BLOCO_ELIMINADO');\n\nif (!Array.isArray(partes))\n  causas.push('CAMPO_CODE_RICH_TEXT_AUSENTE');\n\nif (typeof esperado !== 'string')\n  causas.push('SNAPSHOT_INVALIDO');\n\nif (atual !== esperado)\n  causas.push('TEXTO_DIFERENTE');\n\nif (causas.length) {\n  let indice = null;\n\n  if (typeof atual === 'string' &&\n      typeof esperado === 'string') {\n    indice = 0;\n    while (\n      indice < Math.min(atual.length, esperado.length) &&\n      atual[indice] === esperado[indice]\n    ) indice++;\n  }\n\n  throw new Error('BLOQUEADO / DIAGNOSTICO: ' +\n    JSON.stringify({\n      causas,\n      idEsperado: s.blockId,\n      idAtual: b.id,\n      tipoBloco: b.type,\n      tamanhoEsperado: esperado?.length ?? null,\n      tamanhoAtual: atual?.length ?? null,\n      primeiraDiferenca: indice,\n      trechoEsperado: indice === null ? null :\n        esperado.slice(Math.max(0, indice - 30), indice + 80),\n      trechoAtual: indice === null ? null :\n        atual.slice(Math.max(0, indice - 30), indice + 80)\n    })\n  );\n}\n\nreturn [{ json: s }];\n"
+      },
+      "name": "Proteger contra alteracoes concorrentes",
+      "id": "4596c3d2-c915-485d-b87f-70b516dcf394",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.notion.com/v1/blocks/{{ $json.blockId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payload }}",
+        "options": {}
+      },
+      "name": "Guardar JSON no mesmo bloco",
+      "id": "eab0e4ad-4362-467a-ac36-77599adf4d52",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        976,
+        688
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst s=JSON.parse(JSON.stringify($('Proteger contra alteracoes concorrentes').item.json)),b=$input.first().json;\nconst text=(b.code?.rich_text||[]).map(t=>t.plain_text??t.text?.content??'').join('');\nif(b.id!==s.blockId||text!==JSON.stringify(s.data,null,2))throw Error('Notion nao confirmou o JSON guardado.');\ns.snapshot=text;s.statusBody={properties:{Status:{select:{name:s.data.estado==='VALIDADO'?'Validado':'Incompleto'}}}};return [{json:s}];\n"
+      },
+      "name": "Confirmar gravacao",
+      "id": "16d593fe-08ed-49c3-967a-0c307296c9ab",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.notion.com/v1/pages/{{ $json.pageId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.statusBody }}",
+        "options": {}
+      },
+      "name": "Atualizar status",
+      "id": "f5b54a7f-b5f7-4d44-9daf-3fefba4db384",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        496,
+        688
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst s=JSON.parse(JSON.stringify($('Confirmar gravacao').item.json));\nif($input.first().json.id?.replace(/-/g,'')!==s.pageId.replace(/-/g,''))throw Error('Resposta Notion divergente.');\nreturn [{json:s}];\n"
+      },
+      "name": "Continuar com estado guardado",
+      "id": "ad0151f7-91a1-4b0a-90c9-1be728f13bd1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Parar por erro Groq?",
+              "leftValue": "={{ $json.stop === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Parar por erro Groq?",
+      "id": "5bd213ec-2ceb-46ce-ab3b-3cfa87b06c0d",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        16,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const s=$input.first().json;\nreturn [{json:{alojamento:s.data?.alojamento??null,estado:s.data?.estado??'SEM_CANDIDATO',fotosConcluidas:s.data?.fotos?.length??0,fotosPendentes:s.data?.pendentes?.length??0,erro:s.data?.erro??null,pagina:s.pageId?'https://www.notion.so/'+s.pageId.replace(/-/g,''):null,ignorados:s.resumo?.ignorados??[],mensagem:s.mensagem??(s.stop?'Progresso guardado. Execucao terminada por erro.':'Execucao terminada.')}}];"
+      },
+      "name": "Parado - progresso guardado",
+      "id": "b6b11b33-483c-4429-aec3-990f5f393e1e",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Alojamento terminado?",
+              "leftValue": "={{ $json.data.estado === 'VALIDADO' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Alojamento terminado?",
+      "id": "3ee55113-22ca-432c-acc0-89cf4642f4f0",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        256,
+        992
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 35
+      },
+      "name": "Esperar 35 segundos",
+      "id": "dbdf0f25-d203-4fb8-a2fa-2d44de6d16c7",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1696,
+        432
+      ],
+      "webhookId": "aa64238d-753f-4b07-85ec-44f358109432"
+    },
+    {
+      "parameters": {
+        "jsCode": "const s=$input.first().json;\nreturn [{json:{alojamento:s.data?.alojamento??null,estado:s.data?.estado??'SEM_CANDIDATO',fotosConcluidas:s.data?.fotos?.length??0,fotosPendentes:s.data?.pendentes?.length??0,erro:s.data?.erro??null,pagina:s.pageId?'https://www.notion.so/'+s.pageId.replace(/-/g,''):null,ignorados:s.resumo?.ignorados??[],mensagem:s.mensagem??(s.stop?'Progresso guardado. Execucao terminada por erro.':'Execucao terminada.')}}];"
+      },
+      "name": "Fim",
+      "id": "8d7053b2-5d18-4eb2-9686-09183c940cd6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 35
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        304
+      ],
+      "id": "25051ba8-4b9c-49b4-abcd-0496f9237519",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Notion - Incompletos": {
+      "main": [
+        [
+          {
+            "node": "Ler codigos das paginas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler codigos das paginas": {
+      "main": [
+        [
+          {
+            "node": "Escolher menor alojamento valido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar foto": {
+      "main": [
+        [
+          {
+            "node": "Ha foto pendente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ha foto pendente?": {
+      "main": [
+        [
+          {
+            "node": "Esperar 35 segundos",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar gravacao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GROQ": {
+      "main": [
+        [
+          {
+            "node": "Incorporar resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Incorporar resposta": {
+      "main": [
+        [
+          {
+            "node": "Preparar gravacao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar gravacao": {
+      "main": [
+        [
+          {
+            "node": "Verificar bloco antes de gravar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar bloco antes de gravar": {
+      "main": [
+        [
+          {
+            "node": "Proteger contra alteracoes concorrentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proteger contra alteracoes concorrentes": {
+      "main": [
+        [
+          {
+            "node": "Guardar JSON no mesmo bloco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar JSON no mesmo bloco": {
+      "main": [
+        [
+          {
+            "node": "Confirmar gravacao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar gravacao": {
+      "main": [
+        [
+          {
+            "node": "Atualizar status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atualizar status": {
+      "main": [
+        [
+          {
+            "node": "Continuar com estado guardado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continuar com estado guardado": {
+      "main": [
+        [
+          {
+            "node": "Parar por erro Groq?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parar por erro Groq?": {
+      "main": [
+        [
+          {
+            "node": "Parado - progresso guardado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alojamento terminado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alojamento terminado?": {
+      "main": [
+        [
+          {
+            "node": "Fim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar foto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar 35 segundos": {
+      "main": [
+        [
+          {
+            "node": "GROQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escolher menor alojamento valido": {
+      "main": [
+        [
+          {
+            "node": "Existe alojamento valido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Existe alojamento valido?": {
+      "main": [
+        [
+          {
+            "node": "Preparar foto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Notion - Incompletos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "5b518a1e-cbad-4694-86cc-dc8bbd27122d",
+  "meta": {
+    "instanceId": "c4912bb2604277389a4f191b1fd9990f0f15105fac5511fc96894cb26b2d540d"
+  },
+  "nodeGroups": [],
+  "id": "8KS61bqlYLIg2r7Z",
+  "tags": []
+}

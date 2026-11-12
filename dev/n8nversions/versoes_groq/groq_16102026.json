@@ -1,0 +1,98 @@
+
+{{ JSON.stringify({
+  model: "qwen/qwen3.8-27b",
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Analisa a fotografia fornecida de um alojamento turístico.
+
+RESPONDE EXCLUSIVAMENTE COM JSON VÁLIDO.
+
+ESTRUTURA OBRIGATÓRIA:
+{
+  "etiqueta": "Quarto",
+  "traducoes": {
+    "pt": {
+      "title": "Título em português",
+      "descricao": "Descrição em português.",
+      "alt": "Texto alternativo em português."
+    },
+    "es": {
+      "title": "Título en español",
+      "descricao": "Descripción en español.",
+      "alt": "Texto alternativo en español."
+    },
+    "en": {
+      "title": "British English title",
+      "descricao": "Description in British English.",
+      "alt": "Alternative text in British English."
+    },
+    "fr": {
+      "title": "Titre en français",
+      "descricao": "Description en français.",
+      "alt": "Texte alternatif en français."
+    }
+  }
+}
+
+ETIQUETA — ESCOLHE EXATAMENTE UMA OPÇÃO:
+[
+  "Balcão",
+  "Cafeteria",
+  "Child's bedroom",
+  "Cozinha",
+  "Detalhes",
+  "Exterior",
+  "Fachada",
+  "Garagem",
+  "Jardim",
+  "Outros",
+  "Piscina",
+  "Plano",
+  "Quarto de banho",
+  "Quarto",
+  "Receção",
+  "Resort",
+  "Sala de estar",
+  "Sala de jantar",
+  "Terraço",
+  "Visualizações"
+]
+
+- A etiqueta tem de corresponder exatamente a uma opção.
+- Não inventes categorias nem devolvas IDs.
+- Usa português europeu, espanhol de Espanha, inglês britânico e francês natural.
+- Todos os idiomas devem conter title, descricao e alt.
+- Cada title deve ter no máximo 70 caracteres.
+- Cada alt deve ter no máximo 125 caracteres.
+- Cada descricao deve ser uma única frase, idealmente com 10 a 20 palavras.
+- Não inventes características que não sejam visíveis ou confirmadas.
+- Não copies conteúdo de outras fotografias.
+- Não acrescentes campos ao JSON.
+
+PROIBIÇÃO ABSOLUTA DE CORES:
+Não menciones cores em nenhum campo ou idioma. Não descrevas objetos, paredes, mobiliário, tecidos ou decoração através das suas cores. Descreve apenas os elementos, materiais, formas, disposição e características relevantes sem referências a cores.
+
+VERIFICAÇÃO FINAL:
+Confirma que o JSON é válido, a etiqueta pertence à lista, todos os 12 campos de texto estão preenchidos, todos os títulos respeitam 70 caracteres e todos os textos alternativos respeitam 125 caracteres. Se um campo exceder o limite, reescreve apenas esse campo e volta a verificar. Nunca copies conteúdo de outra fotografia.
+
+Devolve exclusivamente o objeto JSON final.`,
+        },
+        {
+          type: "image_url",
+          image_url: {
+            url: $json.fotoUrl
+          }
+        }
+      ]
+    }
+  ],
+  response_format: {
+    type: "json_object"
+  },
+  temperature: 0.2,
+  max_completion_tokens: 2500
+}) }}

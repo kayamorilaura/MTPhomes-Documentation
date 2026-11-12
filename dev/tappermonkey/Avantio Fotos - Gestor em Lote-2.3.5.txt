@@ -1,0 +1,1879 @@
+// ==UserScript==
+// @name         Avantio Fotos - Gestor em Lote
+// @namespace    laura.avantio.fotos
+// @version      2.3.5
+// @description  Associacao visual, selecao total e parcial para alojamentos incompletos e gravacao segura mais rapida - CORREÇÃO TAG
+// @match        https://app.avantio.pro/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const VERSION = '2.3.5';
+  const PANEL_ID = 'avf231';
+  const JOB_KEY = 'avf22_active_job';
+  const STORE_PREFIX = 'avf21_gallery_';
+  const DONE_PREFIX = 'avf21_done_';
+
+  // Pausa apenas DEPOIS da verificacao da fotografia e antes da proxima.
+  // A gravacao e a reabertura continuam com as mesmas verificacoes.
+  const DELAY = 1200;
+  const SAVE_TIMEOUT = 9000;
+  const MAX_DURATION = 45 * 60 * 1000;
+
+  const LANG = { pt: 10, es: 1, en: 2, fr: 5 };
+  const TYPES = {
+    descripcion: 'descricao',
+    title: 'title',
+    alt: 'alt'
+  };
+
+  const $ = (s, root = document) =>
+    root?.querySelector(s) || null;
+
+  const $$ = (s, root = document) =>
+    [...(root?.querySelectorAll(s) || [])];
+
+  if (document.getElementById(PANEL_ID)) return;
+
+  let panel, status, jsonBox, mapBox;
+  let gallery = null;
+  let info = null;
+  const confirmedPairs = new Set();
+
+  // =====================================================
+  // 1. ARMAZENAMENTO
+  // =====================================================
+
+  function getJSON(storage, key) {
+    try {
+      return JSON.parse(storage.getItem(key) || 'null');
+    } catch {
+      return null;
+    }
+  }
+
+  const jobGet = () => getJSON(sessionStorage, JOB_KEY);
+  const jobSet = job =>
+    sessionStorage.setItem(JOB_KEY, JSON.stringify(job));
+  const jobClear = () => sessionStorage.removeItem(JOB_KEY);
+  const dataKey = gid => STORE_PREFIX + gid;
+  const doneKey = (gid, hash) =>
+    DONE_PREFIX + gid + '_' + hash;
+
+  function hashString(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16);
+  }
+
+  function runHash(data, pairs) {
+    return hashString(JSON.stringify({
+      pageId: data.pageId,
+      fotos: [...data.fotos].sort(
+        (a, b) => a.numero - b.numero
+      ),
+      pares: [...pairs].sort(
+        (a, b) => a.id.localeCompare(b.id)
+      )
+    }));
+  }
+
+  function doneGet(gid, hash) {
+    return new Set(
+      getJSON(localStorage, doneKey(gid, hash)) || []
+    );
+  }
+
+  function doneMark(job, id) {
+    const done = doneGet(job.gid, job.hash);
+    done.add(String(id));
+    localStorage.setItem(
+      doneKey(job.gid, job.hash),
+      JSON.stringify([...done])
+    );
+  }
+
+  function log(job, msg) {
+    return [
+      ...(job.history || []),
+      new Date().toLocaleTimeString() + ' ' + msg
+    ].slice(-60);
+  }
+
+  function statusText(msg) {
+    if (status) status.textContent = msg;
+  }
+
+  function showStatus(job) {
+    if (!job) return statusText('Sem execução.');
+
+    statusText(
+      `Estado: ${job.phase}\n` +
+      `Execução: ${Math.min(job.index, job.tasks.length)}` +
+      `/${job.tasks.length}\n` +
+      `Verificadas: ${doneGet(job.gid, job.hash).size}` +
+      `/${job.total}\n\n` +
+      (job.history || []).slice(-10).join('\n')
+    );
+  }
+
+  function errorStop(job, msg) {
+    const next = {
+      ...job,
+      phase: 'error',
+      history: log(job, 'ERRO: ' + msg)
+    };
+    jobSet(next);
+    showStatus(next);
+  }
+
+  function activeJob() {
+    return [
+      'navigate', 'checking', 'saving',
+      'reopen', 'waiting'
+    ].includes(jobGet()?.phase);
+  }
+
+  // =====================================================
+  // 2. VALIDAR JSON - permite associar apenas as fotografias do PATCH
+  // =====================================================
+
+
+function validateData(text) {
+  let data = JSON.parse(text);
+
+  if (Array.isArray(data)) {
+    if (data.length !== 1) {
+      throw Error('Cola apenas um alojamento.');
+    }
+    data = data[0];
+  }
+
+  if (
+    !data ||
+    typeof data.pageId !== 'string' ||
+    !data.pageId.trim() ||
+    !Number.isInteger(data.totalFotos) ||
+    data.totalFotos < 1
+  ) {
+    throw Error('Identificação do alojamento inválida.');
+  }
+
+  const PATCH_FORMAT =
+    'PATCH_AVANTIO_CAMPOS_EM_FALTA_V1';
+
+  const isPatch = data.formato === PATCH_FORMAT;
+
+  if (isPatch) {
+    if (
+      !Array.isArray(data.atualizacoes) ||
+      !data.atualizacoes.length ||
+      data.atualizacoes.length > data.totalFotos
+    ) {
+      throw Error('PATCH sem atualizações válidas.');
+    }
+
+    data.fotos = structuredClone(data.atualizacoes);
+    data.modo = 'PATCH';
+
+  } else {
+    if (
+      !['VALIDADO', 'PARCIAL'].includes(data.estado) ||
+      !Array.isArray(data.fotos) ||
+      data.fotos.length < 1 ||
+      data.fotos.length > data.totalFotos ||
+      (data.estado === 'VALIDADO' && data.fotos.length !== data.totalFotos)
+    ) {
+      throw Error('JSON VALIDADO/PARCIAL inválido ou sem fotografias.');
+    }
+
+    // PARCIAL: trabalhar apenas com fotos inteiramente concluídas.
+    // Fotografias ainda por concluir nunca devem ser gravadas.
+    if (data.estado === 'PARCIAL') {
+      data.fotos = data.fotos.filter(f => f?.sucesso === true);
+      if (!data.fotos.length) {
+        throw Error('PARCIAL sem fotografias concluídas (sucesso=true).');
+      }
+    }
+    data.modo = data.estado === 'PARCIAL' ? 'PARCIAL' : 'COMPLETO';
+  }
+
+  const langs = Object.keys(LANG);
+  const props = ['title', 'descricao', 'alt'];
+
+  const camposPermitidos = new Set([
+    ...langs.flatMap(l =>
+      props.map(p => `${l}.${p}`)
+    ),
+    'etiqueta'
+  ]);
+
+  const numeros = new Set();
+  const urls = new Set();
+  const ids = new Set();
+
+  for (const foto of data.fotos) {
+    const n = foto.numero;
+
+    if (
+      !Number.isInteger(n) ||
+      n < 1 ||
+      n > data.totalFotos ||
+      numeros.has(n)
+    ) {
+      throw Error(`Número inválido: foto ${n}`);
+    }
+
+    numeros.add(n);
+
+    const url = new URL(foto.url);
+
+    if (
+      !['https:', 'http:'].includes(url.protocol) ||
+      urls.has(url.href)
+    ) {
+      throw Error(`URL inválida: foto ${n}`);
+    }
+
+    urls.add(url.href);
+
+    if (isPatch) {
+      if (
+        !Number.isSafeInteger(foto.idAvantio) ||
+        foto.idAvantio < 1 ||
+        ids.has(foto.idAvantio)
+      ) {
+        throw Error(`ID Avantio inválido: foto ${n}`);
+      }
+
+      ids.add(foto.idAvantio);
+
+      if (
+        !Array.isArray(foto.camposAAtualizar) ||
+        !foto.camposAAtualizar.length ||
+        new Set(foto.camposAAtualizar).size !==
+          foto.camposAAtualizar.length
+      ) {
+        throw Error(
+          `Foto ${n}: lista de campos inválida.`
+        );
+      }
+
+      for (const campo of foto.camposAAtualizar) {
+        if (!camposPermitidos.has(campo)) {
+          throw Error(`Campo proibido: ${campo}`);
+        }
+
+
+          if (campo === 'etiqueta') {
+              // VALIDAR apenas a existência de uma etiqueta válida.
+              // Não alterar o formulário nesta função.
+
+              if (
+                  !Number.isInteger(foto.etiqueta?.id) ||
+                  foto.etiqueta.id < 0 ||
+                  foto.etiqueta.id > 20
+              ) {
+                  throw Error(
+                      `Foto ${foto.numero}: etiqueta inválida.`
+                  );
+              }
+
+              continue;
+          }
+
+
+
+        const [lang, prop] = campo.split('.');
+        let valor = foto.traducoes?.[lang]?.[prop];
+
+        if (
+          typeof valor !== 'string' ||
+          !valor.trim()
+        ) {
+          throw Error(
+            `Foto ${n}: falta ${campo}`
+          );
+        }
+
+        if (prop === 'title' && valor.length > 70) {
+          throw Error(
+            `Foto ${n}: título demasiado longo.`
+          );
+        }
+
+        if (prop === 'alt' && valor.length > 125) {
+          const parte = valor.slice(0, 124);
+          const corte = parte.lastIndexOf(' ');
+
+          if (corte < 62) {
+            throw Error(
+              `Foto ${n}: ALT não pode ser reduzido.`
+            );
+          }
+
+          valor = parte.slice(0, corte)
+            .replace(/[\s,;:.!?]+$/g, '') + '.';
+
+          foto.traducoes[lang][prop] = valor;
+        }
+      }
+
+      foto.__patch = true;
+
+    } else {
+      if (
+        foto.sucesso !== true ||
+        !Number.isInteger(foto.etiqueta?.id) ||
+        foto.etiqueta.id < 0 ||
+        foto.etiqueta.id > 20
+      ) {
+        throw Error(`Foto ${n} inválida.`);
+      }
+
+      for (const lang of langs) {
+        const t = foto.traducoes?.[lang];
+
+        if (
+          !t ||
+          !props.every(p =>
+            typeof t[p] === 'string' &&
+            t[p].trim()
+          ) ||
+          t.title.length > 70 ||
+          t.alt.length > 125
+        ) {
+          throw Error(
+            `Tradução inválida: foto ${n}, ${lang}`
+          );
+        }
+      }
+    }
+  }
+
+  return data;
+}
+
+
+  // =====================================================
+  // 3. RECUPERAR MINIATURA REAL DO AVANTIO
+  // =====================================================
+
+  function validImageURL(src) {
+    try {
+      if (!src || src.startsWith('data:')) return null;
+      const u = new URL(src, location.href);
+      return ['https:', 'http:'].includes(u.protocol)
+        ? u.href
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isDecoration(url) {
+    return /(?:star|estrela|rating|icon|sprite|logo|placeholder|loading|spinner|favicon|quality|qualidade)/i
+      .test(url || '');
+  }
+
+  function cssImageURL(value) {
+    const match = /url\(\s*["']?([^"')]+)["']?\s*\)/i
+      .exec(value || '');
+    return match ? validImageURL(match[1]) : null;
+  }
+
+  function findGalleryImage(node) {
+    const candidates = [];
+
+    // Examinar todas as imagens do cartão, não só
+    // a primeira, que pode ser o ícone de estrela.
+    for (const img of $$('img', node)) {
+      const sources = [
+        img.getAttribute('data-original'),
+        img.getAttribute('data-src'),
+        img.getAttribute('data-owl-src'),
+        img.getAttribute('data-lazy'),
+        img.currentSrc,
+        img.getAttribute('src')
+      ];
+
+      const rect = img.getBoundingClientRect();
+
+      for (const raw of sources) {
+        const url = validImageURL(raw);
+        if (!url || isDecoration(url)) continue;
+
+        const naturalArea =
+          (img.naturalWidth || 0) *
+          (img.naturalHeight || 0);
+
+        const visibleArea =
+          Math.max(rect.width, img.width || 0) *
+          Math.max(rect.height, img.height || 0);
+
+        candidates.push({
+          url,
+          score: Math.max(naturalArea, visibleArea),
+          source: 'img'
+        });
+      }
+    }
+
+    // Muitas galerias usam background-image.
+    // Procurar nesses elementos também.
+    for (const element of [node, ...$$('*', node)]) {
+      const rect = element.getBoundingClientRect();
+
+      const inlineURL = cssImageURL(
+        element.style?.backgroundImage
+      );
+
+      let computedURL = null;
+
+      if (rect.width >= 60 && rect.height >= 40) {
+        computedURL = cssImageURL(
+          getComputedStyle(element).backgroundImage
+        );
+      }
+
+      for (const url of [inlineURL, computedURL]) {
+        if (!url || isDecoration(url)) continue;
+
+        candidates.push({
+          url,
+          score: rect.width * rect.height,
+          source: 'background'
+        });
+      }
+    }
+
+    // Dar prioridade a imagens grandes, evitando ícones.
+    candidates.sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.url || null;
+  }
+
+  // =====================================================
+  // 4. LER GALERIA E ORDENAÇÃO
+  // =====================================================
+
+  function getGallery() {
+    const nodes = $$(
+      'li.imagenGaleria[data-idimg][data-orden]'
+    );
+
+    if (!nodes.length) return null;
+
+    const ordens = nodes.map(node => {
+      const v = node.dataset.orden;
+      return /^\d+$/.test(v || '') ? Number(v) : NaN;
+    });
+
+    const ordemFiavel =
+      ordens.every(Number.isSafeInteger) &&
+      new Set(ordens).size === nodes.length &&
+      Math.max(...ordens) - Math.min(...ordens) ===
+        nodes.length - 1;
+
+    if (ordemFiavel) {
+      nodes.sort(
+        (a, b) =>
+          Number(a.dataset.orden) -
+          Number(b.dataset.orden)
+      );
+    }
+
+    let gid = null;
+
+    const photos = nodes.map((node, index) => {
+      const id = node.dataset.idimg;
+
+      const a = $(
+        'a.editarElementGaleria[href]',
+        node
+      );
+
+      if (!/^\d+$/.test(id || '') || !a) {
+        throw Error('Foto sem link válido.');
+      }
+
+      const u = new URL(a.href);
+      const galleryId = u.searchParams.get('return_id');
+
+      if (
+        u.origin !== location.origin ||
+        u.pathname !== '/index.php' ||
+        u.searchParams.get('module') !== 'Fotos' ||
+        u.searchParams.get('action') !== 'EditView' ||
+        u.searchParams.get('record') !== id ||
+        u.searchParams.get('return_module') !== 'Galerias' ||
+        !/^\d+$/.test(galleryId || '') ||
+        !u.searchParams.get('avs')
+      ) {
+        throw Error('Link inesperado: ' + id);
+      }
+
+      if (gid !== null && gid !== galleryId) {
+        throw Error('Galerias inconsistentes.');
+      }
+
+      gid = galleryId;
+
+      return {
+        id,
+        ordem: index + 1,
+        ordemAvantio: node.dataset.orden,
+        href: a.href,
+        image: findGalleryImage(node)
+      };
+    });
+
+    if (
+      new Set(photos.map(p => p.id)).size !==
+      photos.length
+    ) {
+      throw Error('IDs duplicados na galeria.');
+    }
+
+    return { gid, photos, ordemFiavel };
+  }
+
+  // =====================================================
+  // 5. VALIDAR MAPA
+  // =====================================================
+
+
+    function validatePairs(pairs, data, galeria) {
+        if (
+            !Array.isArray(pairs) ||
+            pairs.length !== data.fotos.length ||
+            galeria.photos.length !== data.totalFotos
+        ) {
+            throw Error(
+                'Total da galeria, JSON ou mapa incompatível.'
+            );
+        }
+
+        const reais = new Set(
+            galeria.photos.map(p => String(p.id))
+        );
+
+        const fotos = new Map(
+            data.fotos.map(f => [f.numero, f])
+        );
+
+        const ids = new Set();
+        const numeros = new Set();
+
+        for (const pair of pairs) {
+            const id = String(pair.id);
+            const numero = Number(pair.numero);
+            const foto = fotos.get(numero);
+
+            if (
+                !reais.has(id) ||
+                !foto ||
+                ids.has(id) ||
+                numeros.has(numero)
+            ) {
+                throw Error(
+                    `Associação inválida: ${numero} / ${id}`
+                );
+            }
+
+            if (
+                data.modo === 'PATCH' &&
+                String(foto.idAvantio) !== id
+            ) {
+                throw Error(
+                    `Foto ${numero}: ID diferente do auditor.`
+                );
+            }
+
+            ids.add(id);
+            numeros.add(numero);
+        }
+
+        return pairs.map(p => ({
+            id: String(p.id),
+            numero: Number(p.numero)
+        }));
+    }
+
+
+  // Objeto persistido e validado. Compatível com o formato anterior
+  // (array de pares) e com o mapa guardado nesta versão.
+  function mapObject(data, pairs) {
+    return {
+      pageId: data.pageId,
+      alojamento: data.alojamento,
+      totalFotos: data.totalFotos,
+      pares: pairs.map(p => ({ id: String(p.id), numero: Number(p.numero) }))
+    };
+  }
+
+  function parseMap(text, data, galeria) {
+    if (!text || !text.trim()) {
+      throw Error('Mapa vazio. Cria e confirma as correspondências.');
+    }
+    let obj;
+    try { obj = JSON.parse(text); }
+    catch { throw Error('Mapa: JSON inválido.'); }
+    if (!Array.isArray(obj) && (!obj || typeof obj !== 'object')) {
+      throw Error('Mapa com estrutura inválida.');
+    }
+    if (!Array.isArray(obj) && obj.pageId &&
+        String(obj.pageId).replace(/-/g, '').toLowerCase() !==
+        String(data.pageId).replace(/-/g, '').toLowerCase()) {
+      throw Error('Mapa pertence a outro alojamento.');
+    }
+    const pairs = Array.isArray(obj) ? obj : (obj.pares || obj.pairs);
+    return validatePairs(pairs, data, galeria);
+  }
+
+  // =====================================================
+  // 6. SUGESTÕES AUTOMÁTICAS
+  // =====================================================
+
+  function imageIdentity(url) {
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname;
+    } catch {
+      return null;
+    }
+  }
+
+  function suggestMatches(data, galeria) {
+    const result = new Map();
+
+    for (const gp of galeria.photos) {
+      // PATCH do auditor: identificação exata pelo ID da fotografia.
+      const byId = data.fotos.find(f => String(f.idAvantio || '') === String(gp.id));
+      if (byId) {
+        result.set(gp.id, byId.numero);
+        continue;
+      }
+      const identity = imageIdentity(gp.image);
+      if (!identity) continue;
+
+      const matches = data.fotos.filter(
+        f => imageIdentity(f.url) === identity
+      );
+
+      if (matches.length === 1) {
+        result.set(gp.id, matches[0].numero);
+      }
+    }
+
+    return result;
+  }
+
+  function suggestMatchesByOrder(data, galeria) {
+    const result = new Map();
+
+    if (
+      !galeria.ordemFiavel ||
+      galeria.photos.length !== data.fotos.length
+    ) return result;
+
+    const sorted = [...data.fotos].sort(
+      (a, b) => a.numero - b.numero
+    );
+
+    galeria.photos.forEach((gp, index) => {
+      result.set(gp.id, sorted[index].numero);
+    });
+
+    return result;
+  }
+
+  // =====================================================
+  // 7. FORMULÁRIO DE EDIÇÃO
+  // =====================================================
+
+  function getForm() {
+    const form = $('form#EditView');
+
+    const id = $(
+      '[name="record"]',
+      form || document
+    )?.value;
+
+    if (
+      !form ||
+      $('[name="module"]', form)?.value !== 'Fotos' ||
+      $('[name="action"]', form)?.value !== 'Save' ||
+      !/^\d+$/.test(id || '')
+    ) return null;
+
+    return { form, id };
+  }
+
+  // =====================================================
+  // 8. APENAS CAMPOS AUTORIZADOS
+  // =====================================================
+
+  function expectedFields(info, photo) {
+    const isPatch = photo.__patch === true;
+    const requested = new Set(isPatch ? photo.camposAAtualizar : [
+      'etiqueta',
+      ...Object.keys(LANG).flatMap(lang =>
+        ['title', 'descricao', 'alt'].map(prop => `${lang}.${prop}`))
+    ]);
+    const expected = new Map();
+    const allowed = new Set();
+
+    if (requested.has('etiqueta')) {
+      const select = $('select#selectTipos[name="SelectTipos"]', info.form);
+      if (!select || select.disabled || ![...select.options].some(
+        o => o.value === String(photo.etiqueta?.id))) {
+        throw Error('Etiqueta indisponível.');
+      }
+      expected.set(select, String(photo.etiqueta.id));
+      allowed.add(select);
+    }
+
+    for (const [lang, code] of Object.entries(LANG)) {
+      for (const [type, prop] of Object.entries(TYPES)) {
+        if (!requested.has(`${lang}.${prop}`)) continue;
+        const id = `i18n_easytour_descripciones_${type}_${info.id}_${code}_hiddenField`;
+        const name = `i18n[easytour_descripciones][${info.id}][${code}][${type}]`;
+        const field = $(`[id="${id}"]`, info.form);
+        if (!field || field.name !== name || field.disabled || field.readOnly) {
+          throw Error('Campo inválido: ' + lang + '/' + type);
+        }
+        expected.set(field, photo.traducoes[lang][prop]);
+        allowed.add(field);
+      }
+    }
+
+    for (const [type, prop] of Object.entries(TYPES)) {
+      if (!requested.has(`pt.${prop}`)) continue;
+      const id = `i18n_easytour_descripciones_${type}_${info.id}_10`;
+      const name = `i18n[easytour_descripciones][${info.id}][10][${type}]`;
+      const field = $(`[id="${id}"]`, info.form);
+      if (!field || field.name !== name || field.disabled || field.readOnly) {
+        throw Error('Campo PT visível inválido.');
+      }
+      expected.set(field, photo.traducoes.pt[prop]);
+      allowed.add(field);
+    }
+    if (!expected.size || (!isPatch && expected.size !== 16)) {
+      throw Error('Controlos autorizados incompletos.');
+    }
+    return { expected, allowed };
+  }
+
+  const valueOf = el =>
+    ['checkbox', 'radio'].includes(el.type)
+      ? el.checked
+      : el.value;
+
+  function differences(expected) {
+    return [...expected].filter(
+      ([el, value]) =>
+        !el.isConnected ||
+        el.value !== String(value)
+    ).length;
+  }
+
+  function fill(el, value) {
+    if (el.value === String(value)) return;
+
+    el.value = String(value);
+
+    el.dispatchEvent(
+      new Event('input', { bubbles: true })
+    );
+    el.dispatchEvent(
+      new Event('change', { bubbles: true })
+    );
+  }
+
+  function snapshotForm(form) {
+    return $$(
+      'input,textarea,select',
+      form
+    ).map(el => ({
+      el,
+      value: valueOf(el)
+    }));
+  }
+
+  function outsideChanges(before, allowed) {
+    return before.filter(
+      x =>
+        !allowed.has(x.el) &&
+        (
+          !x.el.isConnected ||
+          valueOf(x.el) !== x.value
+        )
+    );
+  }
+
+  // =====================================================
+  // 9. MEMÓRIA
+  // =====================================================
+
+  function cached() {
+    return gallery
+      ? getJSON(localStorage, dataKey(gallery.gid))
+      : null;
+  }
+
+  function store(data, pairs) {
+    if (!gallery) throw Error('Galeria ausente.');
+
+    localStorage.setItem(
+      dataKey(gallery.gid),
+      JSON.stringify({ data, pairs })
+    );
+  }
+
+  function currentConfig() {
+    if (!gallery) throw Error('Galeria ausente.');
+
+    const data = validateData(jsonBox.value);
+    const pairs = parseMap(
+      mapBox.value,
+      data,
+      gallery
+    );
+
+    return {
+      data,
+      pairs,
+      hash: runHash(data, pairs)
+    };
+  }
+
+  function refreshGalleryProgress() {
+    try {
+      const { data, hash } = currentConfig();
+
+      statusText(
+        `Galeria ${gallery.gid}\n` +
+        `Fotografias: ${gallery.photos.length}\n` +
+        `Ordem utilizável: ${gallery.ordemFiavel}\n` +
+        `Verificadas: ${doneGet(gallery.gid, hash).size}` +
+        `/${data.fotos.length}\n` +
+        'JSON e mapa válidos.'
+      );
+    } catch (e) {
+      statusText('Configuração: ' + e.message);
+    }
+  }
+
+  // =====================================================
+  // 10. INTERFACE DE CORRESPONDÊNCIAS
+  // =====================================================
+
+  function renderMatcher() {
+    if (!gallery || activeJob()) {
+      return statusText('Galeria indisponível ou execução ativa.');
+    }
+
+    const area = $('#a-matcher', panel);
+    area.replaceChildren();
+
+    let data;
+
+    try {
+      data = validateData(jsonBox.value);
+    } catch (e) {
+      return statusText('JSON inválido: ' + e.message);
+    }
+
+    if (data.totalFotos !== gallery.photos.length) {
+      return statusText('BLOQUEADO: o total do alojamento não coincide com a galeria.');
+    }
+
+    let existing = [];
+
+    try {
+      existing = parseMap(mapBox.value, data, gallery);
+    } catch {
+      existing = [];
+    }
+
+    const selected = new Map(
+      existing.map(p => [p.id, p.numero])
+    );
+    const sortedFotos = [...data.fotos].sort(
+      (a, b) => a.numero - b.numero
+    );
+    const photoByNumber = new Map(
+      sortedFotos.map(f => [f.numero, f])
+    );
+    const existingIDs = new Set(existing.map(p => p.id));
+    const selectedNumbers = new Set(selected.values());
+
+    const urlSuggestions = suggestMatches(data, gallery);
+    const orderSuggestions = suggestMatchesByOrder(
+      data,
+      gallery
+    );
+
+    confirmedPairs.clear();
+
+    let urlCount = 0;
+    let orderCount = 0;
+
+    for (const gp of gallery.photos) {
+      if (selected.has(gp.id)) continue;
+
+      const n = urlSuggestions.get(gp.id);
+
+      if (
+        n &&
+        !selectedNumbers.has(n)
+      ) {
+        selected.set(gp.id, n);
+        selectedNumbers.add(n);
+        urlCount++;
+      }
+    }
+
+    for (const gp of gallery.photos) {
+      if (selected.has(gp.id)) continue;
+
+      const n = orderSuggestions.get(gp.id);
+
+      if (
+        n &&
+        !selectedNumbers.has(n)
+      ) {
+        selected.set(gp.id, n);
+        selectedNumbers.add(n);
+        orderCount++;
+      }
+    }
+
+    const rows = [];
+
+    function refreshCounter() {
+      const assigned = rows.filter(
+        r => r.select.value
+      ).length;
+
+      const confirmed = rows.filter(
+        r => r.select.value &&
+          confirmedPairs.has(
+            r.gp.id + ':' + r.select.value
+          )
+      ).length;
+
+      statusText(
+        `Fotografias: ${gallery.photos.length}\n` +
+        `Associações: ${assigned}\n` +
+        `Confirmadas: ${confirmed}\n` +
+        `Propostas por URL: ${urlCount}\n` +
+        `Propostas por ordem: ${orderCount}\n` +
+        'Verifica as imagens antes de confirmar.'
+      );
+    }
+
+    for (const gp of gallery.photos) {
+      const row = document.createElement('div');
+      row.className = 'avf-match';
+
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+
+      const heading = document.createElement('strong');
+      heading.textContent =
+        `Avantio — Foto ${gp.ordem}`;
+
+      left.append(heading);
+
+      const smallId = document.createElement('p');
+      smallId.className = 'avf-muted';
+      smallId.textContent = 'ID interno: ' + gp.id;
+      left.append(smallId);
+
+      // Mostrar a fotografia verdadeira.
+      if (gp.image) {
+        const img = document.createElement('img');
+        img.src = gp.image;
+        img.alt = `Fotografia Avantio ${gp.ordem}`;
+
+        img.addEventListener('error', () => {
+          img.replaceWith(
+            document.createTextNode(
+              'Miniatura não carregada. Ver galeria original.'
+            )
+          );
+        });
+
+        left.append(img);
+      } else {
+        const note = document.createElement('p');
+        note.textContent =
+          'Miniatura não identificada. Ver galeria original.';
+        left.append(note);
+      }
+
+      const select = document.createElement('select');
+      select.append(
+        new Option('— Escolhe a foto —', '')
+      );
+
+      for (const fp of sortedFotos) {
+        select.append(
+          new Option(
+            `Foto ${fp.numero} — ` +
+            (fp.nome || fp.traducoes?.pt?.title || 'Sem título'),
+            String(fp.numero)
+          )
+        );
+      }
+
+      select.value = selected.has(gp.id)
+        ? String(selected.get(gp.id))
+        : '';
+
+      const jsonImg = document.createElement('img');
+      jsonImg.alt = 'Fotografia do JSON';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+
+      const label = document.createElement('label');
+      label.append(
+        checkbox,
+        document.createTextNode(
+          ' Confirmo que são a mesma fotografia'
+        )
+      );
+
+      const method = document.createElement('p');
+      method.className = 'avf-muted';
+
+      method.textContent = existingIDs.has(gp.id)
+        ? 'Mapa anteriormente guardado'
+        : urlSuggestions.get(gp.id) === selected.get(gp.id)
+          ? 'Proposta por URL'
+          : orderSuggestions.get(gp.id) === selected.get(gp.id)
+            ? 'Proposta por ordem'
+            : 'Seleção manual';
+
+      function updateImage() {
+        const photo = photoByNumber.get(Number(select.value));
+
+        if (photo) {
+          jsonImg.src = photo.url;
+          jsonImg.hidden = false;
+        } else {
+          jsonImg.removeAttribute('src');
+          jsonImg.hidden = true;
+        }
+      }
+
+      select.onchange = () => {
+        for (const key of [...confirmedPairs]) {
+          if (key.startsWith(gp.id + ':')) {
+            confirmedPairs.delete(key);
+          }
+        }
+
+        checkbox.checked = false;
+
+        if (select.value) {
+          selected.set(gp.id, Number(select.value));
+        } else {
+          selected.delete(gp.id);
+        }
+
+        updateImage();
+        refreshCounter();
+      };
+
+      checkbox.onchange = () => {
+        const key = gp.id + ':' + select.value;
+
+        if (checkbox.checked && select.value) {
+          confirmedPairs.add(key);
+        } else {
+          confirmedPairs.delete(key);
+        }
+
+        refreshCounter();
+      };
+
+      updateImage();
+
+      right.append(
+        select,
+        jsonImg,
+        method,
+        label
+      );
+
+      row.append(left, right);
+      area.append(row);
+
+      rows.push({ gp, select, checkbox });
+    }
+
+    // A selecao total e somente visual: nao grava nem publica no Avantio.
+    // Exige associacoes completas e unicas, evitando confirmar mapas invalidos.
+    const selectAllButton = document.createElement('button');
+    selectAllButton.type = 'button';
+    selectAllButton.className = 'avf-select-all';
+    selectAllButton.textContent = '✓ Selecionar todos os checks';
+    selectAllButton.onclick = () => {
+      if (activeJob()) {
+        return statusText('Execucao ativa: nao e possivel confirmar pares.');
+      }
+
+      const assignedRows = rows.filter(r => r.select.value);
+      const numeros = assignedRows.map(r => Number(r.select.value));
+      if (
+        assignedRows.length !== data.fotos.length ||
+        numeros.some(n => !Number.isInteger(n) || n < 1) ||
+        new Set(numeros).size !== assignedRows.length
+      ) {
+        return statusText(
+          'BLOQUEADO: preenche cada associacao com uma foto diferente antes de selecionar todos.'
+        );
+      }
+
+      for (const r of assignedRows) {
+        r.checkbox.checked = true;
+        confirmedPairs.add(r.gp.id + ':' + r.select.value);
+      }
+      refreshCounter();
+    };
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent =
+      'Confirmar e guardar correspondências';
+
+    button.onclick = () => {
+      try {
+        const pairs = validatePairs(
+          rows.filter(r => r.select.value).map(r => ({
+            id: r.gp.id,
+            numero: Number(r.select.value)
+          })),
+          data,
+          gallery
+        );
+
+        for (const p of pairs) {
+          if (!confirmedPairs.has(
+            p.id + ':' + p.numero
+          )) {
+            throw Error(
+              'Falta confirmar foto Avantio ' + p.id
+            );
+          }
+        }
+
+        if (!window.confirm(
+          `Guardar ${pairs.length} correspondências?\n` +
+          'Não altera fotografias no Avantio.'
+        )) return;
+
+        mapBox.value = JSON.stringify(
+          mapObject(data, pairs),
+          null,
+          2
+        );
+
+        store(data, pairs);
+        area.replaceChildren();
+        refreshGalleryProgress();
+
+      } catch (e) {
+        statusText('Mapa não guardado: ' + e.message);
+      }
+    };
+
+    const actions = document.createElement('div');
+    actions.className = 'avf-match-actions';
+    actions.append(selectAllButton, button);
+    area.append(actions);
+    refreshCounter();
+  }
+
+  // =====================================================
+  // 11. AVANÇAR APÓS VERIFICAÇÃO
+  // =====================================================
+
+  function moveNext(job, message) {
+    const task = job.tasks[job.index];
+    doneMark(job, task.id);
+
+    const index = job.index + 1;
+
+    const next = {
+      ...job,
+      index,
+      phase: index >= job.tasks.length
+        ? 'done'
+        : 'waiting',
+      history: log(job, message)
+    };
+
+    jobSet(next);
+    showStatus(next);
+
+    if (next.phase === 'done') return;
+
+    setTimeout(() => {
+      const now = jobGet();
+
+      if (
+        !now ||
+        now.phase !== 'waiting' ||
+        now.index !== index ||
+        now.gid !== job.gid ||
+        now.hash !== job.hash
+      ) return;
+
+      const updated = {
+        ...now,
+        phase: 'navigate'
+      };
+
+      jobSet(updated);
+      location.assign(
+        updated.tasks[updated.index].href
+      );
+    }, DELAY);
+  }
+
+  // =====================================================
+  // 12. GRAVAR E VERIFICAR
+  // =====================================================
+
+  function processJob(job) {
+    if (
+      ['done', 'stopped', 'error'].includes(job.phase)
+    ) return;
+
+    if (Date.now() - job.started > MAX_DURATION) {
+      return errorStop(job, 'Execução expirada.');
+    }
+
+    if (gallery && gallery.gid !== job.gid) {
+      return errorStop(job, 'Mudança de galeria.');
+    }
+
+    const task = job.tasks[job.index];
+
+    if (!task) {
+      return errorStop(job, 'Tarefa ausente.');
+    }
+
+    if (job.phase === 'saving') {
+      const next = {
+        ...job,
+        phase: 'reopen',
+        history: log(
+          job,
+          'Página carregada após Guardar; reabertura.'
+        )
+      };
+      jobSet(next);
+      location.assign(task.href);
+      return;
+    }
+
+    const record = new URL(
+      location.href
+    ).searchParams.get('record');
+
+    const matching =
+      !!info &&
+      info.id === task.id &&
+      record === task.id;
+
+    if (job.phase === 'reopen') {
+      if (!matching) {
+        return errorStop(
+          job,
+          'ID diferente depois de reabrir.'
+        );
+      }
+
+      try {
+        const mapped = expectedFields(info, task.foto);
+
+        if (differences(mapped.expected)) {
+          throw Error('Valores não persistiram.');
+        }
+
+        moveNext(
+          job,
+          `VERIFICADA e guardada: ` +
+          `JSON ${task.numero} / Avantio ${task.id}`
+        );
+      } catch (e) {
+        errorStop(job, 'Verificação: ' + e.message);
+      }
+
+      return;
+    }
+
+    if (job.phase === 'waiting') {
+      return errorStop(
+        job,
+        'Recarregamento inesperado durante a pausa.'
+      );
+    }
+
+    if (job.phase === 'checking') {
+      return errorStop(
+        job,
+        'Preparação interrompida. Verifica manualmente.'
+      );
+    }
+
+    if (job.phase !== 'navigate') return;
+
+    if (!matching) {
+      return errorStop(
+        job,
+        'Formulário diferente do previsto.'
+      );
+    }
+
+    try {
+      const { expected, allowed } =
+        expectedFields(info, task.foto);
+
+      if (differences(expected) === 0) {
+        moveNext(
+          job,
+          `JÁ CORRETA: JSON ${task.numero} / ` +
+          `Avantio ${task.id} (sem Guardar)`
+        );
+        return;
+      }
+
+      const button = $('#editViewSave', info.form);
+      const name = $('#nombre', info.form);
+
+      if (
+        !button ||
+        button.type !== 'button' ||
+        button.disabled ||
+        !name?.value.trim() ||
+        typeof window.prep_save !== 'function'
+      ) {
+        throw Error('Guardar original indisponível.');
+      }
+
+      const before = snapshotForm(info.form);
+
+      jobSet({
+        ...job,
+        phase: 'checking'
+      });
+
+      for (const [field, value] of expected) {
+        fill(field, value);
+      }
+
+      setTimeout(() => {
+        const current = jobGet();
+
+        if (
+          current?.phase !== 'checking' ||
+          current.index !== job.index ||
+          current.gid !== job.gid ||
+          current.hash !== job.hash
+        ) return;
+
+        try {
+          const outside = outsideChanges(
+            before,
+            allowed
+          );
+
+          if (
+            !info.form.isConnected ||
+            differences(expected) ||
+            outside.length ||
+            !name.value.trim() ||
+            button.disabled
+          ) {
+            throw Error(
+              'Divergência ou alteração exterior: ' +
+              outside.length
+            );
+          }
+
+          jobSet({
+            ...current,
+            phase: 'saving',
+            history: log(
+              current,
+              `A clicar em Guardar UMA vez: ` +
+              `JSON ${task.numero} / ${task.id}`
+            )
+          });
+
+          showStatus(jobGet());
+          button.click();
+
+          setTimeout(() => {
+            const after = jobGet();
+
+            if (
+              after?.phase === 'saving' &&
+              after.hash === job.hash &&
+              document.getElementById(PANEL_ID)
+            ) {
+              errorStop(
+                after,
+                'Sem navegação após Guardar. ' +
+                'Não repetir automaticamente.'
+              );
+            }
+          }, SAVE_TIMEOUT);
+
+        } catch (e) {
+          errorStop(
+            current,
+            'Antes de guardar: ' + e.message +
+            '. Usa Cancelar se necessário.'
+          );
+        }
+      }, 700);
+
+    } catch (e) {
+      errorStop(
+        jobGet() || job,
+        'Preparação: ' + e.message
+      );
+    }
+  }
+
+  // =====================================================
+  // 13. ESTILOS
+  // =====================================================
+
+  const css = document.createElement('style');
+
+  css.textContent = `
+    #avf231 {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      width: 560px;
+      max-width: calc(100vw - 24px);
+      max-height: 88vh;
+      overflow: auto;
+      background: white;
+      color: #222;
+      border: 2px solid #444;
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 5px 25px #0005;
+      z-index: 999999;
+      font: 13px Arial, sans-serif;
+      box-sizing: border-box;
+    }
+    #avf231 * { box-sizing: border-box; }
+    #avf231 textarea {
+      width: 100%;
+      height: 78px;
+      font: 12px monospace;
+    }
+    #avf231 button,
+    #avf231 select {
+      padding: 6px;
+      margin: 3px;
+    }
+    #avf231 pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #avf231 .avf-match {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 9px 0;
+      border-top: 1px solid #ddd;
+    }
+    #avf231 .avf-match img {
+      width: 100%;
+      height: 120px;
+      object-fit: contain;
+      background: #f5f5f5;
+    }
+    #avf231 .avf-match select {
+      width: 100%;
+      margin: 0;
+    }
+    #avf231 .avf-muted {
+      color: #666;
+      font-size: 11px;
+    }
+    #avf231 .avf-match-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 10px 0;
+      border-top: 1px solid #ddd;
+    }
+    #avf231 .avf-select-all {
+      font-weight: bold;
+    }
+  `;
+
+  // =====================================================
+  // 14. INICIALIZAR PAINEL
+  // =====================================================
+
+  function init() {
+    if (!document.body) return;
+
+    document.head.append(css);
+
+    panel = document.createElement('div');
+    panel.id = PANEL_ID;
+
+    panel.innerHTML = `
+      <strong>
+        Avantio Fotos — Gestor em Lote v${VERSION}
+      </strong>
+
+      <p id="a-context"></p>
+
+      <section id="a-gallery">
+        <p>JSON VALIDADO, PARCIAL ou PATCH do n8n:</p>
+        <textarea id="a-json"></textarea>
+
+        <p>Mapa confirmado:</p>
+        <textarea id="a-map"></textarea>
+
+        <button id="a-save" type="button">
+          Validar e guardar dados
+        </button>
+
+        <button id="a-map-create" type="button">
+          Criar/corrigir correspondências
+        </button>
+
+        <div id="a-matcher"></div>
+
+        <p>Quantidade nesta execução:</p>
+
+        <select id="a-count">
+          <option value="1">1 — teste</option>
+          <option value="3" selected>
+            3 — lote controlado
+          </option>
+          <option value="all">
+            Todas as fotografias restantes
+          </option>
+        </select>
+
+        <button id="a-run" type="button">
+          Processar fotografias
+        </button>
+
+        <button id="a-forget" type="button">
+          Apagar dados desta galeria
+        </button>
+      </section>
+
+      <hr>
+
+      <button id="a-stop" type="button">Parar</button>
+      <button id="a-clear" type="button">
+        Limpar execução
+      </button>
+      <button id="a-close" type="button">
+        Fechar painel
+      </button>
+
+      <pre id="a-status"></pre>
+
+      <p class="avf-muted">
+        Gravação real apenas após autorização.
+        VALIDADO/PARCIAL: etiqueta + 12 traduções. PATCH: só campos pedidos.
+        Uma foto de cada vez.
+        Verificação após reabrir.
+      </p>
+    `;
+
+    document.body.append(panel);
+
+    status = $('#a-status', panel);
+    jsonBox = $('#a-json', panel);
+    mapBox = $('#a-map', panel);
+
+    info = getForm();
+
+    try {
+      gallery = info ? null : getGallery();
+    } catch (e) {
+      statusText('Erro na galeria: ' + e.message);
+    }
+
+    $('#a-context', panel).textContent = info
+      ? 'Edição individual: ' + info.id
+      : gallery
+        ? `Galeria ${gallery.gid}: ` +
+          `${gallery.photos.length} fotografias`
+        : 'Abre uma galeria para começar.';
+
+    $('#a-gallery', panel).hidden = !gallery;
+
+    // PARAR
+    $('#a-stop', panel).onclick = () => {
+      const job = jobGet();
+      if (!job) return statusText('Sem execução.');
+
+      const next = {
+        ...job,
+        phase: 'stopped',
+        history: log(job, 'Parada manualmente.')
+      };
+
+      jobSet(next);
+      showStatus(next);
+    };
+
+    // LIMPAR EXECUÇÃO
+    $('#a-clear', panel).onclick = () => {
+      if (
+        jobGet() &&
+        !confirm(
+          'Limpar execução? Não reverte gravações.'
+        )
+      ) return;
+
+      jobClear();
+
+      if (gallery) refreshGalleryProgress();
+      else statusText('Execução limpa.');
+    };
+
+    // FECHAR
+    $('#a-close', panel).onclick = () => {
+      if (activeJob()) {
+        return statusText('Primeiro usa Parar.');
+      }
+
+      panel.remove();
+      css.remove();
+    };
+
+    // VALIDAR MAPA
+    $('#a-save', panel).onclick = () => {
+      try {
+        if (activeJob()) {
+          throw Error('Execução ativa.');
+        }
+
+        const { data, pairs } = currentConfig();
+
+        if (!confirm(
+          `Confirmaste visualmente os ${pairs.length} pares?\n` +
+          'Não modifica fotografias.'
+        )) return;
+
+        store(data, pairs);
+        refreshGalleryProgress();
+
+      } catch (e) {
+        statusText('Dados não guardados: ' + e.message);
+      }
+    };
+
+    // MAPEAR
+    $('#a-map-create', panel).onclick = renderMatcher;
+
+    // APAGAR MEMÓRIA DESTA GALERIA
+    $('#a-forget', panel).onclick = () => {
+      if (activeJob()) {
+        return statusText('Primeiro para a execução.');
+      }
+
+      if (
+        !gallery ||
+        !confirm('Apagar JSON e mapa desta galeria?')
+      ) return;
+
+      localStorage.removeItem(dataKey(gallery.gid));
+      jsonBox.value = '';
+      mapBox.value = '';
+      $('#a-matcher', panel).replaceChildren();
+      statusText('Configuração eliminada.');
+    };
+
+    // INICIAR LOTE
+    $('#a-run', panel).onclick = () => {
+      try {
+        if (!gallery) {
+          throw Error('Abre uma galeria.');
+        }
+
+        const old = jobGet();
+
+        if (activeJob()) {
+          throw Error('Execução já ativa.');
+        }
+
+        if (
+          old &&
+          ['error', 'stopped'].includes(old.phase) &&
+          !confirm(
+            'Já verificaste manualmente a última foto ' +
+            'da execução interrompida?'
+          )
+        ) return;
+
+        const { data, pairs, hash } = currentConfig();
+
+        const links = new Map(
+          gallery.photos.map(p => [p.id, p.href])
+        );
+
+        const done = doneGet(gallery.gid, hash);
+
+        const remaining = pairs.filter(
+          p => !done.has(p.id)
+        );
+
+        if (!remaining.length) {
+          return statusText(
+            `CONCLUÍDO: ${done.size}/${data.fotos.length}`
+          );
+        }
+
+        const choice = $('#a-count', panel).value;
+
+        const max = choice === 'all'
+          ? remaining.length
+          : Math.min(Number(choice), remaining.length);
+
+        if (!Number.isInteger(max) || max < 1) {
+          throw Error('Limite inválido.');
+        }
+
+        const tasks = remaining.slice(0, max).map(
+          p => ({
+            id: p.id,
+            numero: p.numero,
+            href: links.get(p.id),
+            foto: data.fotos.find(
+              f => f.numero === p.numero
+            )
+          })
+        );
+
+        if (tasks.some(t => !t.href || !t.foto)) {
+          throw Error('Tarefas incompletas.');
+        }
+
+        if (!confirm(
+          'GRAVAÇÃO REAL\n\n' +
+          `${data.alojamento}\n` +
+          `Fotografias: ${data.fotos.length}\n` +
+          `Já verificadas: ${done.size}\n` +
+          `Neste lote: ${tasks.length}\n\n` +
+          'Confirmas as associações e a gravação?'
+        )) return;
+
+        store(data, pairs);
+
+        const job = {
+          gid: gallery.gid,
+          hash,
+          total: data.fotos.length,
+          tasks,
+          index: 0,
+          phase: 'navigate',
+          started: Date.now(),
+          history: [
+            new Date().toLocaleTimeString() +
+            ' Lote iniciado.'
+          ]
+        };
+
+        jobSet(job);
+        location.assign(tasks[0].href);
+
+      } catch (e) {
+        statusText('Início bloqueado: ' + e.message);
+      }
+    };
+
+    // RECUPERAR DADOS DA GALERIA
+    if (gallery) {
+      const saved = cached();
+
+      if (saved) {
+        try {
+          const data = validateData(
+            JSON.stringify(saved.data)
+          );
+
+          const pairs = validatePairs(
+            saved.pairs,
+            data,
+            gallery
+          );
+
+          jsonBox.value = JSON.stringify(
+            data,
+            null,
+            2
+          );
+
+          mapBox.value = JSON.stringify(
+            mapObject(data, pairs),
+            null,
+            2
+          );
+
+        } catch (e) {
+          statusText('Cache incompatível: ' + e.message);
+        }
+      }
+    }
+
+    // RECUPERAR EXECUÇÃO
+    const job = jobGet();
+
+    if (job) {
+      showStatus(job);
+      processJob(job);
+    } else if (gallery) {
+      refreshGalleryProgress();
+    } else {
+      statusText(
+        'Abre uma galeria para configurar o alojamento.'
+      );
+    }
+  }
+
+  // =====================================================
+  // 15. ARRANQUE
+  // =====================================================
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      init,
+      { once: true }
+    );
+  } else {
+    init();
+  }
+
+})();

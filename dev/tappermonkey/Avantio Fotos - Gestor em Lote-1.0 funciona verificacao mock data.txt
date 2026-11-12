@@ -1,0 +1,281 @@
+
+ // ==UserScript==
+ // @name         Avantio Fotos - Gestor em Lote
+ // @namespace    laura.avantio.fotos
+ // @version      1.1
+ // @description  Valida JSON e inspeciona a galeria Avantio sem alterar dados
+ // @match        https://app.avantio.pro/*
+ // @grant        none
+ // ==/UserScript==
+ // O TamperMonkey utiliza essas info para saber o nome, a versão e as páginas onde esse script pode funcionar
+
+(function () {
+  'use strict';
+    // Modo estrito: deteta alguns erros de programação
+    // e impede determinadas operações ambíguas.
+
+  if (window.__avantioFotosGestor) return; // Confere se já foi inicializado na extensão
+  window.__avantioFotosGestor = true; // "window" representa o objeto global daquela página.
+
+  function iniciar() {
+    if (!document.body || document.getElementById('avf-painel')) return;
+      // Se o corpo da página ainda não existir, não podemos
+      // inserir o painel. Também evitamos duplicar o painel.
+      // TESTE LOCAL: não interage com a galeria nem altera dados.
+      
+
+    const painel = document.createElement('div');  // Cria um elemento HTML <div> através do JavaScript.
+    painel.id = 'avf-painel';
+
+    Object.assign(painel.style, {
+        // Object.assign() copia as propriedades de um objeto
+        // para outro. Neste caso, aplica estilos ao painel.
+      position: 'fixed',
+      right: '20px',
+      bottom: '20px',
+      width: '410px',
+      maxHeight: '80vh',
+      overflowY: 'auto',
+      zIndex: '999999',
+      background: '#fff',
+      color: '#222',
+      padding: '16px',
+      border: '2px solid #555',
+      borderRadius: '10px',
+      boxShadow: '0 4px 18px #0004',
+      font: '14px Arial, sans-serif'
+    });
+
+    //CONSTRUIR A INTERFACE HTML
+    // As crases ` permitem escrever texto em várias linhas.
+    // Esta sintaxe chama-se template literal.
+    //
+    // O HTML define o título, a caixa de texto, os botões
+    // e a zona onde será apresentado o relatório.
+    painel.innerHTML = `
+      <strong>Avantio Fotos — Gestor em lote</strong>
+      <p id="avf-contagem">A procurar fotografias na página…</p>
+
+      <label for="avf-json">
+        Cola aqui o JSON completo do n8n:
+      </label>
+
+      <textarea id="avf-json"
+        placeholder='{"alojamento":"...","fotos":[...]}'
+        style="box-sizing:border-box;width:100%;height:150px;margin-top:8px">
+      </textarea>
+
+      <button id="avf-verificar" style="margin-top:8px">
+        Validar JSON e galeria
+      </button>
+
+      <button id="avf-fechar" style="float:right;margin-top:8px">
+        Fechar
+      </button>
+
+      <pre id="avf-resultado"
+        style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px">
+      </pre>
+    `;
+
+    document.body.appendChild(painel); // Até aqui, criámos a interface, mas ainda não a lógica
+
+    const idiomas = ['pt', 'es', 'en', 'fr'];
+
+      // GESTÃO DO TEMPO — PREPARAÇÃO PARA FUTURA AUTOMAÇÃO
+      // Esta função não altera dados do Avantio.
+      function esperar(ms) {
+          return new Promise(resolve => {
+              setTimeout(resolve, ms);
+          });
+      }
+
+      // Simulação: não preenche campos nem guarda dados.
+      async function simularSequencia(fotos) {
+          console.log('Início da simulação');
+
+          for (let i = 0; i < fotos.length; i++) {
+              console.log(
+                  `Foto ${i + 1}/${fotos.length}: preparada para validação`
+              );
+
+              // Pausa entre verificações da simulação.
+              const pausa = 500 + Math.floor(Math.random() * 1001);
+              await esperar(pausa);
+
+              console.log(`Pausa da simulação: ${pausa} ms`);
+          }
+
+  console.log('Simulação concluída');
+}
+
+    function obterFotos() {
+      return [
+        ...document.querySelectorAll(
+          'li.imagenGaleria[data-idimg][data-orden]'
+        )
+      ].filter(li =>
+        li.querySelector('.editarElementGaleria')
+      );
+    }
+
+    function atualizarContagem() {
+      const fotos = obterFotos();
+
+      document.getElementById('avf-contagem').textContent =
+        `Fotografias detetadas nesta página: ${fotos.length}`;
+
+      return fotos;
+    }
+
+    function validarFoto(foto, indice) {
+      const erros = [];
+      const n = foto.numero ?? indice + 1;
+
+      if (!foto.url || typeof foto.url !== 'string') {
+        erros.push(`Foto ${n}: falta o URL da fotografia.`);
+      }
+
+      if (!foto.etiqueta || typeof foto.etiqueta !== 'object') {
+        erros.push(`Foto ${n}: falta o objeto etiqueta.`);
+      } else {
+        if (!foto.etiqueta.nome) {
+          erros.push(`Foto ${n}: falta etiqueta.nome.`);
+        }
+
+        if (foto.etiqueta.id === undefined ||
+            foto.etiqueta.id === null) {
+          erros.push(`Foto ${n}: falta etiqueta.id.`);
+        }
+      }
+
+      if (!foto.traducoes || typeof foto.traducoes !== 'object') {
+        erros.push(`Foto ${n}: falta o objeto traducoes.`);
+        return erros;
+      }
+
+      for (const idioma of idiomas) {
+        const traducao = foto.traducoes[idioma];
+
+        if (!traducao) {
+          erros.push(`Foto ${n}: falta o idioma ${idioma.toUpperCase()}.`);
+          continue;
+        }
+
+        if (!traducao.title?.trim()) {
+          erros.push(`Foto ${n} (${idioma}): título vazio.`);
+        } else if (traducao.title.length > 70) {
+          erros.push(
+            `Foto ${n} (${idioma}): título com ` +
+            `${traducao.title.length} caracteres (máximo 70).`
+          );
+        }
+
+        if (!traducao.descricao?.trim()) {
+          erros.push(`Foto ${n} (${idioma}): descrição vazia.`);
+        }
+
+        if (!traducao.alt?.trim()) {
+          erros.push(`Foto ${n} (${idioma}): texto alternativo vazio.`);
+        } else if (traducao.alt.length > 125) {
+          erros.push(
+            `Foto ${n} (${idioma}): texto alternativo com ` +
+            `${traducao.alt.length} caracteres (máximo 125).`
+          );
+        }
+      }
+
+      if (foto.acessibilidade !== false) {
+        erros.push(
+          `Foto ${n}: acessibilidade não está definida como false. ` +
+          `Confirmar antes de qualquer alteração.`
+        );
+      }
+
+      return erros;
+    }
+
+    document.getElementById('avf-verificar').addEventListener('click', () => {
+      const resultado = document.getElementById('avf-resultado');
+      resultado.textContent = '';
+
+      let dados;
+
+      try {
+        dados = JSON.parse(
+          document.getElementById('avf-json').value.trim()
+        );
+      } catch (e) {
+        resultado.textContent =
+          'ERRO: JSON inválido. Confirma se copiaste o objeto completo.';
+        return;
+      }
+
+        // Aceita tanto um objeto direto como uma lista com um objeto.
+        if (Array.isArray(dados)) {
+            dados = dados[0];
+        }
+
+        if (!dados || !Array.isArray(dados.fotos) ||
+            dados.fotos.length === 0) {
+            resultado.textContent =
+                'ERRO: esperado um objeto com uma lista "fotos" não vazia.';
+            return;
+        }
+
+      const fotosPagina = atualizarContagem();
+      const erros = [];
+
+      dados.fotos.forEach((foto, indice) => {
+        erros.push(...validarFoto(foto, indice));
+      });
+
+      const ids = fotosPagina.map(li => li.dataset.idimg);
+      const ordens = fotosPagina.map(li => li.dataset.orden);
+
+      const linhas = [
+        '=== RELATÓRIO DE VALIDAÇÃO ===',
+        `Alojamento: ${dados.alojamento || 'não indicado'}`,
+        `Page ID: ${dados.pageId || 'não indicado'}`,
+        `Fotos declaradas no JSON: ${dados.totalFotos ?? 'não indicado'}`,
+        `Objetos de foto no JSON: ${dados.fotos.length}`,
+        `Fotos detetadas na galeria: ${fotosPagina.length}`,
+        '',
+        `IDs Avantio: ${ids.join(', ') || 'nenhum'}`,
+        `Ordens na galeria: ${ordens.join(', ') || 'nenhuma'}`,
+        '',
+        '=== VALIDAÇÃO DOS DADOS ===',
+        erros.length
+          ? `Foram encontrados ${erros.length} problema(s):`
+          : 'Todos os campos obrigatórios passaram na validação.',
+        ...erros.slice(0, 60),
+        erros.length > 60
+          ? `... e mais ${erros.length - 60} problema(s).`
+          : '',
+        '',
+        '=== CORRESPONDÊNCIA DAS FOTOS ===',
+        dados.fotos.length === fotosPagina.length
+          ? 'As quantidades coincidem; a identidade das imagens NÃO foi confirmada.'
+          : 'As quantidades diferem; investigar antes de prosseguir.',
+        '',
+        'MODO DE SEGURANÇA: apenas leitura.',
+        'Nenhuma fotografia foi preenchida ou guardada.'
+      ];
+
+      resultado.textContent = linhas.filter(Boolean).join('\n');
+    });
+
+    document.getElementById('avf-fechar').addEventListener('click', () => {
+      painel.remove();
+      window.__avantioFotosGestor = false;
+    });
+
+    atualizarContagem();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+  } else {
+    iniciar();
+  }
+})();

@@ -1,0 +1,835 @@
+{
+  "name": "MTPHomes | APENAS erro GROQ → PARCIAL/PENDENTE → Notion PS",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "database",
+        "databaseId": {
+          "__rl": true,
+          "value": "3a4e8e19-c14a-80ee-9b2e-e075d6b5a71f",
+          "mode": "list",
+          "cachedResultName": "3a4e8e19-c14a-80d6-97d7-000b31bb190c",
+          "cachedResultUrl": "https://app.notion.com/p/3a4e8e19c14a80ee9b2ee075d6b5a71f"
+        }
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        -1568,
+        192
+      ],
+      "id": "339c600c-5fb7-41c7-a995-0a76235d2c26",
+      "name": "Get a database",
+      "alwaysOutputData": true,
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "dataSourceId": {
+          "__rl": true,
+          "value": "3a4e8e19-c14a-8095-90b5-000b0ec5f3cb",
+          "mode": "list",
+          "cachedResultName": "Lista de alterações dos alojamentos",
+          "cachedResultUrl": "https://app.notion.com/p/3a4e8e19c14a80ceb20bf96d9ddb4372"
+        },
+        "returnAll": true,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "key": "Status|select",
+              "condition": "equals",
+              "optionValue": "Confirmar fotografias"
+            },
+            {
+              "key": "URL|url",
+              "condition": "is_not_empty"
+            }
+          ]
+        },
+        "simple": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        -1344,
+        192
+      ],
+      "id": "69e4f8d6-b713-4b9b-85e3-74125ca7887e",
+      "name": "Get many database pages",
+      "alwaysOutputData": true,
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst itens = $input.all();\n\nif (!itens.length) {\n  throw new Error('Nenhum alojamento recebido do Notion.');\n}\n\nreturn itens.map((item, index) => {\n  const p = item.json;\n\n  const pageId = p.id;\n  const nome = p.properties?.Name?.title\n    ?.map(t => t.plain_text ?? '')\n    .join('').trim() || 'Sem nome';\n\n  const urlAlojamento = p.properties?.URL?.url;\n\n  if (!pageId || !urlAlojamento) {\n    throw new Error(`Alojamento ${index + 1} sem ID ou URL.`);\n  }\n\n  return {\n    json: {\n      pageId,\n      nome,\n      urlAlojamento\n    },\n    pairedItem: { item: index }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        192
+      ],
+      "id": "737b3c45-2ca0-41a2-b35f-3fe18510ef4b",
+      "name": "Code_1"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.urlAlojamento }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -896,
+        192
+      ],
+      "id": "fd1548ad-dd97-4a23-a3f5-5e6f8ea1b698",
+      "name": "HTTP_1"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst respostas = $input.all();\nconst alojamentos = $('Code_1').all();\n\nif (respostas.length !== alojamentos.length) {\n  throw new Error(\n    `Recebidos ${respostas.length} HTMLs para ${alojamentos.length} alojamentos.`\n  );\n}\n\nreturn respostas.map((item, i) => {\n  const dados = alojamentos[i].json;\n\n  const html = String(item.json.data ?? '')\n    .replace(/\\\\\\//g, '/');\n\n  const regex = /https:\\/\\/www\\.mtphomes\\.pt\\/aluguer\\/fotos\\/3\\/[^\"'<>\\s\\\\]+\\/big[^\"'<>\\s\\\\]+\\.(?:jpg|jpeg|png|webp)/gi;\n\n  const fotos = [...new Set(html.match(regex) || [])];\n\n  if (!fotos.length) {\n    throw new Error(\n      `Nenhuma fotografia encontrada: ${dados.nome}`\n    );\n  }\n\n  return {\n    json: {\n      pageId: dados.pageId,\n      nome: dados.nome,\n      urlAlojamento: dados.urlAlojamento,\n      qtdFotos: fotos.length,\n      fotos\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        192
+      ],
+      "id": "fe8c3fc4-e48f-4ac5-92c4-42326097e8cc",
+      "name": "Code_4",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.fotoUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        224
+      ],
+      "id": "1428b850-26b6-4203-a212-26e65e409953",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -224,
+        192
+      ],
+      "id": "3a66a778-fe0a-4352-b8d0-8acf67e1fee4",
+      "name": "Loop Over Items",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "amount": 35
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        224
+      ],
+      "id": "0c405672-dd61-4ca1-ac33-b122508ecea9",
+      "name": "Wait",
+      "webhookId": "064ff0f7-309c-479b-9ab8-06de8382ac13"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpMultipleHeadersAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "=\n{{ JSON.stringify({\n  model: \"qwen/qwen3.8-27b\",\n  messages: [\n    {\n      role: \"user\",\n      content: [\n        {\n          type: \"text\",\n          text: `Analisa exclusivamente a fotografia de um alojamento turístico. Gera conteúdo comercial conciso, natural, profissional e factual.\n\nResponde exclusivamente com um objeto JSON válido, sem Markdown ou texto adicional, usando esta estrutura:\n{\n  \"etiqueta\": \"Quarto\",\n  \"traducoes\": {\n    \"pt\": {\"title\": \"\", \"descricao\": \"\", \"alt\": \"\"},\n    \"es\": {\"title\": \"\", \"descricao\": \"\", \"alt\": \"\"},\n    \"en\": {\"title\": \"\", \"descricao\": \"\", \"alt\": \"\"},\n    \"fr\": {\"title\": \"\", \"descricao\": \"\", \"alt\": \"\"}\n  }\n}\n\nETIQUETA: escolhe exatamente uma destas opções:\n[\"Balcão\",\"Cafeteria\",\"Child's bedroom\",\"Cozinha\",\"Detalhes\",\"Exterior\",\"Fachada\",\"Garagem\",\"Jardim\",\"Outros\",\"Piscina\",\"Plano\",\"Quarto de banho\",\"Quarto\",\"Receção\",\"Resort\",\"Sala de estar\",\"Sala de jantar\",\"Terraço\",\"Visualizações\"]\n\nUsa a etiqueta exatamente como escrita, sem a traduzir. Escolhe a que melhor representa o elemento principal; se nenhuma for adequada, usa \"Outros\".\n\nIDIOMAS E CAMPOS:\n- pt: português europeu; es: espanhol de Espanha; en: inglês britânico; fr: francês natural.\n- title: título natural adequado a um anúncio turístico, máximo de 70 caracteres.\n- descricao: uma única frase, idealmente com 10–20 palavras, acolhedora e profissional. Destaca uma experiência ou benefício sem repetir o título ou o alt.\n- alt: descrição objetiva e acessível dos elementos visíveis, máximo de 125 caracteres.\n\nREGRAS:\n1. Mantém o mesmo significado factual nos quatro idiomas.\n2. Preenche os 12 campos com strings não vazias.\n3. Não inventes elementos, características ou comodidades não visíveis ou confirmados.\n4. Não menciones cores em nenhum campo ou idioma. Evita nomes de cores e referências cromáticas como \"claro\", \"escuro\" ou \"colorido\". \n5. Evita repetições, enumerações e exageros comerciais.\n6. Baseia-te apenas nesta fotografia. Nunca reutilizes conteúdo de outras fotografias.\n\nDevolve apenas o objeto JSON final.`\n        },\n        {\n          type: \"image_url\",\n          image_url: {\n            url: $json.fotoUrl\n          }\n        }\n      ]\n    }\n  ],\n  response_format: {\n    type: \"json_object\"\n  },\n  temperature: 0.2,\n  max_completion_tokens: 1500\n}) }}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        224
+      ],
+      "id": "1c5f30c6-e4c7-4663-a47b-f0f5e5ecf01c",
+      "name": "GROQ",
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpMultipleHeadersAuth": {
+          "id": "thN16eTZ6gf29NbH",
+          "name": "Multiple Headers Auth account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n'use strict';\n\n// ==================================================\n// AVANTIO FOTOS — GROQ REAL\n// Processar respostas acumuladas do Loop\n// Compatível com Preparar JSON Avantio Lote1\n// ==================================================\n\n// 1. RECEBER RESPOSTAS E FOTOGRAFIAS\n\nconst entrada = $input.all();\nconst originais = $('Code_4').all();\nconst idiomas = ['pt', 'es', 'en', 'fr'];\n\n// Aceitar respostas em itens separados ou\n// num único array explícito.\nconst resultados = entrada.flatMap(item => {\n  const d = item.json;\n\n  if (Array.isArray(d)) return d;\n  if (Array.isArray(d?.data)) return d.data;\n  if (Array.isArray(d?.respostas)) return d.respostas;\n\n  return [d];\n});\n\n// 2. VERIFICAR QUANTIDADES\n\nif (originais.length === 0) {\n  throw new Error(\n    'BLOQUEADO: Code_4 não contém fotografias.'\n  );\n}\n\nif (resultados.length !== originais.length) {\n  throw new Error(\n    `BLOQUEADO: ${resultados.length} respostas Groq ` +\n    `para ${originais.length} fotografias.`\n  );\n}\n\n// 3. VALIDAR REFERÊNCIAS ORIGINAIS\n\nconst numeros = originais.map(item =>\n  Number(item.json.pid ?? item.json.PID)\n);\n\nif (\n  numeros.some(n => !Number.isInteger(n)) ||\n  new Set(numeros).size !== originais.length\n) {\n  throw new Error(\n    'BLOQUEADO: números de fotografia inválidos ou repetidos.'\n  );\n}\n\nconst totais = originais.map(item =>\n  Number(item.json.qtdFotos)\n);\n\nif (\n  totais.some(n => n !== originais.length)\n) {\n  throw new Error(\n    'BLOQUEADO: total de fotografias inconsistente no Code_4.'\n  );\n}\n\n// 4. FUNÇÕES AUXILIARES\n\nfunction textoValido(valor) {\n  return typeof valor === 'string' &&\n    valor.trim().length > 0;\n}\n\nfunction extrairConteudo(resposta) {\n  return (\n    resposta?.choices?.[0]?.message?.content ??\n    resposta?.content?.parts?.[0]?.text ??\n    resposta?.text ??\n    resposta?.output ??\n    null\n  );\n}\n\nfunction limparJSON(texto) {\n  return texto\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```$/i, '')\n    .trim();\n}\n\n// 5. PROCESSAR CADA RESPOSTA\n\nreturn resultados.map((resposta, index) => {\n\n  const original = originais[index].json;\n\n  const numero = Number(\n    original.pid ?? original.PID\n  );\n\n  const base = {\n    alojamento: {\n      pageId: original.pageId ?? '',\n      nome: original.nome ?? '',\n      urlAnuncio: original.urlAlojamento ?? ''\n    },\n\n    foto: {\n      numero,\n      url: original.fotoUrl ?? '',\n      total: original.qtdFotos ?? null\n    }\n  };\n\n  function falhar(mensagem) {\n    return {\n      json: {\n        ...base,\n        sucesso: false,\n        erro: mensagem\n      }\n    };\n  }\n\n  // Verificar identidade da fotografia\n\n  if (\n    !textoValido(base.alojamento.pageId) ||\n    !textoValido(base.alojamento.nome) ||\n    !textoValido(base.alojamento.urlAnuncio) ||\n    !textoValido(base.foto.url)\n  ) {\n    return falhar(\n      `Fotografia ${numero}: identificação incompleta.`\n    );\n  }\n\n  // Verificar resposta da Groq\n\n  const conteudo = extrairConteudo(resposta);\n\n  if (!textoValido(conteudo)) {\n    const erro = resposta?.error?.message ??\n      resposta?.error ??\n      'Sem conteúdo válido';\n\n    return falhar(\n      `Fotografia ${numero}: ${String(erro)}`\n    );\n  }\n\n  // Converter resposta em JSON\n\n  let dados;\n\n  try {\n    dados = JSON.parse(limparJSON(conteudo));\n  } catch (erro) {\n    return falhar(\n      `Fotografia ${numero}: JSON inválido — ` +\n      erro.message\n    );\n  }\n\n  if (\n    !dados ||\n    typeof dados !== 'object' ||\n    !textoValido(dados.etiqueta) ||\n    !dados.traducoes ||\n    typeof dados.traducoes !== 'object'\n  ) {\n    return falhar(\n      `Fotografia ${numero}: etiqueta ou traduções ausentes.`\n    );\n  }\n\n  // 6. NORMALIZAR TRADUÇÕES\n\n  const traducoes = {};\n\n  for (const idioma of idiomas) {\n\n    const t = dados.traducoes[idioma] ?? {};\n\n    traducoes[idioma] = {\n      title: t.title ?? t.titulo ?? '',\n      descricao:\n        t.descricao ??\n        t.description ??\n        t.descripcion ??\n        '',\n      alt: t.alt ?? ''\n    };\n  }\n\n  // 7. VALIDAR CAMPOS OBRIGATÓRIOS\n\n  const completos = idiomas.every(idioma => {\n    const t = traducoes[idioma];\n\n    return (\n      textoValido(t.title) &&\n      textoValido(t.descricao) &&\n      textoValido(t.alt) &&\n      t.title.length <= 70 &&\n      t.alt.length <= 125\n    );\n  });\n\n  if (!completos) {\n    return {\n      json: {\n        ...base,\n        nome: traducoes.pt.title ?? '',\n        etiqueta: dados.etiqueta,\n        acessibilidade: false,\n        traducoes,\n        sucesso: false,\n        erro:\n          `Fotografia ${numero}: campos em falta ` +\n          'ou limites de caracteres excedidos.'\n      }\n    };\n  }\n\n  // 8. RESULTADO FINAL DA FOTOGRAFIA\n\n  return {\n    json: {\n      ...base,\n      nome: traducoes.pt.title,\n      etiqueta: dados.etiqueta,\n      acessibilidade: false,\n      traducoes,\n      sucesso: true\n    }\n  };\n\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "6e6c304b-df1a-40f2-85b3-e6125e54ddcd",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n'use strict';\n\n// ==================================================\n// AVANTIO FOTOS — PREPARAR JSON FINAL\n// Compatível com Groq real e Mock Data\n// Saída: VALIDADO ou BLOQUEADO\n// Não modifica dados no Avantio\n// ==================================================\n\n// ==================================================\n// 1. REUNIR OS REGISTOS\n// ==================================================\n\nconst items = $input.all();\nconst idiomas = ['pt', 'es', 'en', 'fr'];\n\nconst registos = items.flatMap(item => {\n  const dados = item.json;\n\n  if (Array.isArray(dados)) return dados;\n\n  if (dados && Array.isArray(dados.fotos)) {\n    return dados.fotos;\n  }\n\n  if (dados && Array.isArray(dados.data)) {\n    return dados.data;\n  }\n\n  return dados ? [dados] : [];\n});\n\nif (registos.length === 0) {\n  throw new Error(\n    'BLOQUEADO: não foram recebidas fotografias.'\n  );\n}\n\n// ==================================================\n// 2. RECUPERAR IDENTIFICAÇÃO DE CADA REGISTO\n// ==================================================\n\nfunction identificar(registo) {\n  const a = registo.alojamento;\n  const f = registo.foto ?? registo;\n\n  return {\n    pageId:\n      (typeof a === 'object' && a !== null\n        ? a.pageId : null) ??\n      registo.pageId ??\n      null,\n\n    nome:\n      (typeof a === 'string'\n        ? a\n        : a?.nome) ??\n      registo.alojamentoNome ??\n      null,\n\n    url:\n      (typeof a === 'object' && a !== null\n        ? a.urlAnuncio ?? a.urlAlojamento\n        : null) ??\n      registo.urlAnuncio ??\n      registo.urlAlojamento ??\n      null,\n\n    total:\n      f.total ??\n      registo.qtdFotos ??\n      registo.totalFotos ??\n      null\n  };\n}\n\nconst identificacoes = registos.map(identificar);\n\n// ==================================================\n// 3. VALIDAR QUE É APENAS UM ALOJAMENTO\n// ==================================================\n\nconst ids = [\n  ...new Set(identificacoes.map(a => a.pageId))\n];\n\nconst nomesAlojamento = [\n  ...new Set(identificacoes.map(a => a.nome))\n];\n\nconst urlsAnuncio = [\n  ...new Set(identificacoes.map(a => a.url))\n];\n\nif (\n  ids.length !== 1 ||\n  typeof ids[0] !== 'string' ||\n  !ids[0].trim() ||\n  nomesAlojamento.length !== 1 ||\n  typeof nomesAlojamento[0] !== 'string' ||\n  !nomesAlojamento[0].trim() ||\n  urlsAnuncio.length !== 1 ||\n  typeof urlsAnuncio[0] !== 'string' ||\n  !urlsAnuncio[0].trim()\n) {\n  throw new Error(\n    'BLOQUEADO: as fotografias não pertencem ' +\n    'inequivocamente ao mesmo alojamento.'\n  );\n}\n\nconst pageId = ids[0];\nconst alojamentoNome = nomesAlojamento[0];\nconst urlAnuncio = urlsAnuncio[0];\n\n// ==================================================\n// 4. VALIDAR QUANTIDADE TOTAL\n// ==================================================\n\nconst totais = [\n  ...new Set(\n    identificacoes.map(a => Number(a.total))\n  )\n];\n\nif (\n  totais.length !== 1 ||\n  !Number.isInteger(totais[0]) ||\n  totais[0] < 1\n) {\n  throw new Error(\n    'BLOQUEADO: quantidade total de fotografias ' +\n    'ausente ou inconsistente.'\n  );\n}\n\nconst totalEsperado = totais[0];\n\nif (registos.length !== totalEsperado) {\n  throw new Error(\n    `BLOQUEADO: eram esperadas ${totalEsperado} ` +\n    `fotografias, mas chegaram ${registos.length}.`\n  );\n}\n\n// ==================================================\n// 5. ORDENAR AS FOTOGRAFIAS\n// ==================================================\n\nregistos.sort((a, b) => {\n  const numeroA = Number(\n    a.foto?.numero ?? a.numero ?? 0\n  );\n\n  const numeroB = Number(\n    b.foto?.numero ?? b.numero ?? 0\n  );\n\n  return numeroA - numeroB;\n});\n\n// ==================================================\n// 6. MAPA DE ETIQUETAS DO AVANTIO\n// ==================================================\n\nconst etiquetas = {\n  'balcão': 14,\n  'counter': 14,\n  'mostrador': 14,\n  'comptoir': 14,\n\n  'cafeteria': 16,\n  'cafetería': 16,\n\n  \"child's bedroom\": 20,\n  'quarto infantil': 20,\n  'dormitorio infantil': 20,\n  \"chambre d'enfant\": 20,\n\n  'cozinha': 1,\n  'kitchen': 1,\n  'cocina': 1,\n  'cuisine': 1,\n\n  'detalhes': 10,\n  'details': 10,\n  'detalles': 10,\n  'détails': 10,\n\n  'exterior': 9,\n\n  'fachada': 2,\n  'facade': 2,\n  'façade': 2,\n\n  'garagem': 8,\n  'garage': 8,\n\n  'jardim': 5,\n  'garden': 5,\n  'jardín': 5,\n\n  'outros': 11,\n  'other': 11,\n  'otros': 11,\n  'autres': 11,\n\n  'piscina': 6,\n  'pool': 6,\n  'swimming pool': 6,\n  'piscine': 6,\n\n  'plano': 18,\n  'floor plan': 18,\n  'plano de planta': 18,\n  'plan': 18,\n\n  'quarto de banho': 4,\n  'bathroom': 4,\n  'baño': 4,\n  'salle de bain': 4,\n\n  'quarto': 3,\n  'quarto de cama': 3,\n  'dormitorio': 3,\n  'bedroom': 3,\n  'chambre': 3,\n\n  'receção': 13,\n  'recepcion': 13,\n  'recepción': 13,\n  'reception': 13,\n  'réception': 13,\n\n  'resort': 19,\n\n  'sala de estar': 12,\n  'living room': 12,\n  'salon': 12,\n  'séjour': 12,\n\n  'sala de jantar': 15,\n  'dining room': 15,\n  'comedor': 15,\n  'salle à manger': 15,\n\n  'terraço': 7,\n  'terrace': 7,\n  'terraza': 7,\n  'terrasse': 7,\n\n  'visualizações': 17,\n  'views': 17,\n  'vistas': 17,\n  'vue': 17,\n  'vues': 17\n};\n\nconst idsValidos = new Set(\n  Object.values(etiquetas)\n);\n\n// ==================================================\n// 7. NORMALIZAR E IDENTIFICAR ETIQUETAS\n// ==================================================\n\nfunction normalizarEtiqueta(valor) {\n  if (typeof valor !== 'string') return null;\n\n  return valor\n    .trim()\n    .toLocaleLowerCase()\n    .normalize('NFC');\n}\n\nfunction obterEtiqueta(original) {\n\n  const nomes = typeof original === 'string'\n    ? [original]\n    : [\n        original?.pt,\n        original?.nome,\n        original?.es,\n        original?.en,\n        original?.fr\n      ];\n\n  // Se receber um ID, validar a categoria.\n  if (\n    original &&\n    typeof original === 'object' &&\n    original.id !== undefined &&\n    original.id !== null &&\n    original.id !== ''\n  ) {\n    const id = Number(original.id);\n\n    if (Number.isInteger(id) && idsValidos.has(id)) {\n\n      const nomeOriginal = nomes.find(\n        n => typeof n === 'string' && n.trim()\n      );\n\n      // Não aceitar um ID contraditório com o nome.\n      if (nomeOriginal) {\n        const chave = normalizarEtiqueta(nomeOriginal);\n        const idDoNome = etiquetas[chave];\n\n        if (\n          idDoNome !== undefined &&\n          idDoNome !== id\n        ) {\n          return {\n            nome: nomeOriginal,\n            id: null\n          };\n        }\n      }\n\n      return {\n        nome: nomeOriginal ?? null,\n        id\n      };\n    }\n\n    // Não substituir silenciosamente um ID inválido.\n    return {\n      nome: nomes.find(\n        n => typeof n === 'string' && n.trim()\n      ) ?? null,\n      id: null\n    };\n  }\n\n  // Caso a Groq devolva a etiqueta como texto.\n  for (const nome of nomes) {\n    const chave = normalizarEtiqueta(nome);\n\n    if (\n      chave &&\n      etiquetas[chave] !== undefined\n    ) {\n      return {\n        nome: nome.trim(),\n        id: etiquetas[chave]\n      };\n    }\n  }\n\n  return {\n    nome: nomes.find(\n      n => typeof n === 'string' && n.trim()\n    ) ?? null,\n    id: null\n  };\n}\n\n// ==================================================\n// 8. CONSTRUIR O JSON DAS FOTOGRAFIAS\n// ==================================================\n\nconst fotos = registos.map((registo) => {\n\n  const foto = registo.foto ?? registo;\n\n  const traducoesOriginais =\n    registo.traducoes ??\n    foto.traducoes ??\n    {};\n\n  const traducoes = {};\n\n  for (const idioma of idiomas) {\n\n    const t = traducoesOriginais[idioma] ?? {};\n\n    traducoes[idioma] = {\n      title:\n        t.title ??\n        t.titulo ??\n        '',\n\n      descricao:\n        t.descricao ??\n        t.description ??\n        t.descripcion ??\n        '',\n\n      alt:\n        t.alt ??\n        ''\n    };\n  }\n\n  const etiqueta = obterEtiqueta(\n    registo.etiqueta ?? foto.etiqueta\n  );\n\n  return {\n    numero: Number(\n      foto.numero ?? registo.numero\n    ),\n\n    url:\n      foto.url ??\n      foto.fotoUrl ??\n      registo.url ??\n      registo.fotoUrl ??\n      null,\n\n    nome:\n      registo.nome ??\n      foto.nome ??\n      traducoes.pt.title ??\n      null,\n\n    etiqueta,\n\n    acessibilidade:\n      registo.acessibilidade ??\n      foto.acessibilidade ??\n      false,\n\n    traducoes,\n\n    sucesso:\n      registo.sucesso ??\n      foto.sucesso ??\n      false\n  };\n});\n\n// ==================================================\n// 9. VALIDAR TODOS OS CAMPOS\n// ==================================================\n\nconst diagnostico = [];\n\nfor (const foto of fotos) {\n\n  const problemas = [];\n\n  // Verificar sucesso da IA.\n  if (foto.sucesso !== true) {\n    problemas.push(\n      'A análise da IA não foi concluída com sucesso'\n    );\n  }\n\n  // Número da fotografia.\n  if (\n    !Number.isInteger(foto.numero) ||\n    foto.numero < 1 ||\n    foto.numero > totalEsperado\n  ) {\n    problemas.push('Número da fotografia inválido');\n  }\n\n  // URL da fotografia.\n  if (\n    typeof foto.url !== 'string' ||\n    !foto.url.trim() ||\n    !/^https:\\/\\//i.test(foto.url)\n  ) {\n    problemas.push('URL da fotografia inválida');\n  }\n\n  // Nome principal.\n  if (\n    typeof foto.nome !== 'string' ||\n    !foto.nome.trim()\n  ) {\n    problemas.push('Nome principal em falta');\n  }\n\n  // Etiqueta.\n  if (\n    typeof foto.etiqueta.nome !== 'string' ||\n    !foto.etiqueta.nome.trim()\n  ) {\n    problemas.push('Nome da etiqueta em falta');\n  }\n\n  if (\n    !Number.isInteger(foto.etiqueta.id) ||\n    !idsValidos.has(foto.etiqueta.id)\n  ) {\n    problemas.push(\n      `Etiqueta Avantio inválida: ${foto.etiqueta.nome}`\n    );\n  }\n\n  // Acessibilidade permanece desativada.\n  if (foto.acessibilidade !== false) {\n    problemas.push(\n      'Acessibilidade deve permanecer desativada'\n    );\n  }\n\n  // Validar as quatro traduções.\n  for (const idioma of idiomas) {\n\n    const t = foto.traducoes[idioma];\n\n    // Título.\n    if (\n      typeof t.title !== 'string' ||\n      !t.title.trim()\n    ) {\n      problemas.push(`Título ${idioma} vazio`);\n    } else if (t.title.length > 70) {\n      problemas.push(\n        `Título ${idioma} excede 70 caracteres ` +\n        `(${t.title.length})`\n      );\n    }\n\n    // Descrição.\n    if (\n      typeof t.descricao !== 'string' ||\n      !t.descricao.trim()\n    ) {\n      problemas.push(`Descrição ${idioma} vazia`);\n    }\n\n    // Texto alternativo.\n    if (\n      typeof t.alt !== 'string' ||\n      !t.alt.trim()\n    ) {\n      problemas.push(`Alt ${idioma} vazio`);\n    } else if (t.alt.length > 125) {\n      problemas.push(\n        `Alt ${idioma} excede 125 caracteres ` +\n        `(${t.alt.length})`\n      );\n    }\n  }\n\n  // Registar problemas desta fotografia.\n  if (problemas.length > 0) {\n    diagnostico.push({\n      numero: foto.numero,\n      problemas\n    });\n  }\n}\n\n// ==================================================\n// 10. DETETAR NÚMEROS REPETIDOS\n// ==================================================\n\nconst numeros = fotos.map(f => f.numero);\n\nconst numerosRepetidos = numeros.filter(\n  (numero, indice) =>\n    numeros.indexOf(numero) !== indice\n);\n\nif (numerosRepetidos.length > 0) {\n  diagnostico.push({\n    numero: null,\n    problemas: [\n      'Existem números de fotografia repetidos: ' +\n      [...new Set(numerosRepetidos)].join(', ')\n    ]\n  });\n}\n\n// ==================================================\n// 11. DETETAR NÚMEROS EM FALTA\n// ==================================================\n\nconst esperados = Array.from(\n  { length: totalEsperado },\n  (_, i) => i + 1\n);\n\nconst numerosEmFalta = esperados.filter(\n  numero => !numeros.includes(numero)\n);\n\nif (numerosEmFalta.length > 0) {\n  diagnostico.push({\n    numero: null,\n    problemas: [\n      'Faltam fotografias com os números: ' +\n      numerosEmFalta.join(', ')\n    ]\n  });\n}\n\n// ==================================================\n// 12. DETETAR URLS REPETIDAS\n// ==================================================\n\nconst urlsFotos = fotos.map(f => f.url);\n\nconst urlsRepetidas = urlsFotos.filter(\n  (url, indice) =>\n    typeof url === 'string' &&\n    urlsFotos.indexOf(url) !== indice\n);\n\nif (urlsRepetidas.length > 0) {\n  diagnostico.push({\n    numero: null,\n    problemas: [\n      'Existem URLs de fotografias repetidas no lote.'\n    ]\n  });\n}\n\n// ==================================================\n// 13. DEVOLVER DIAGNÓSTICO SE HOUVER ERROS\n// ==================================================\n\nif (diagnostico.length > 0) {\n\n  return [{\n    json: {\n      estado: 'BLOQUEADO',\n      alojamento: alojamentoNome,\n      pageId,\n      urlAnuncio,\n\n      fotografiasEsperadas: totalEsperado,\n      fotografiasAnalisadas: fotos.length,\n\n      fotografiasComProblemas: diagnostico.filter(\n        item => item.numero !== null\n      ).length,\n\n      erros: diagnostico.map(item => ({\n        fotografia: item.numero,\n        problemas: item.problemas\n      })),\n\n      aviso:\n        'Lote bloqueado para diagnóstico. ' +\n        'Não utilizar este resultado para preencher o Avantio.'\n    }\n  }];\n}\n\n// ==================================================\n// 14. DEVOLVER JSON FINAL VALIDADO\n// ==================================================\n\nreturn [{\n  json: {\n    estado: 'VALIDADO',\n    alojamento: alojamentoNome,\n    pageId,\n    urlAnuncio,\n    totalFotos: fotos.length,\n    fotos\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "6ac3ad8f-db89-4339-a886-f47a536ad465",
+      "name": "Preparar JSON Avantio Lote1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "220cf825-7509-486b-8a4e-737e5f6699f5",
+              "leftValue": "={{ $json.estado }}",
+              "rightValue": "VALIDADO",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        0
+      ],
+      "id": "59b51182-fa66-4cfa-ab15-a00204526a99",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst dados = $input.first().json;\n\n// JSON que queremos guardar\nconst conteudo = JSON.stringify(dados, null, 2);\n\n// O Notion permite no máximo 2000 caracteres\n// por objeto de rich_text.\nconst partes = conteudo.match(/[\\s\\S]{1,1900}/g) || [];\n\nconst richText = partes.map(parte => ({\n  type: \"text\",\n  text: {\n    content: parte\n  }\n}));\n\nreturn [{\n  json: {\n    pageId: dados.pageId,\n    blocks: [\n      {\n        object: \"block\",\n        type: \"code\",\n        code: {\n          language: \"json\",\n          rich_text: richText\n        }\n      }\n    ]\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "f466218a-5f1d-44b1-887d-770425f92bc0",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.notion.com/v1/blocks/{{ $json.pageId }}/children",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  children: $json.blocks\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        0
+      ],
+      "id": "d1104e7a-c665-4c37-b986-7e6d7c6a858f",
+      "name": "Atualiza o Notion",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "value": "={{ $('qntd de fotos').item.json.pageId }}",
+          "mode": "id"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Status|select",
+              "selectValue": "Script pronto"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "623196cc-2ffa-4dbf-8e79-724f46f17e85",
+      "name": "Update a database page",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": []
+        },
+        "event": "pagedUpdatedInDatabase",
+        "dataSourceId": {
+          "__rl": true,
+          "value": "3a4e8e19-c14a-8095-90b5-000b0ec5f3cb",
+          "mode": "list",
+          "cachedResultName": "Lista de alterações dos alojamentos",
+          "cachedResultUrl": "https://app.notion.com/p/3a4e8e19c14a80ceb20bf96d9ddb4372"
+        }
+      },
+      "type": "n8n-nodes-base.notionTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1792,
+        192
+      ],
+      "id": "43a52240-48d1-4d23-ab72-7c1151a5fb5b",
+      "name": "Notion Trigger",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst alojamentos = $input.all().map(item => item.json);\n\n// Ordenar do menor para o maior\nalojamentos.sort((a, b) => a.qtdFotos - b.qtdFotos);\n\n// Escolher apenas UM alojamento\nconst escolhido = alojamentos[0];\n\nif (!escolhido || !escolhido.fotos?.length) {\n  throw new Error(\"Nenhum alojamento válido encontrado.\");\n}\n\n// Gerar um item por fotografia\nreturn escolhido.fotos.map((fotoUrl, index) => ({\n  json: {\n    pageId: escolhido.pageId,\n    nome: escolhido.nome,\n    urlAlojamento: escolhido.urlAlojamento,\n    pid: index + 1,\n    fotoUrl,\n    qtdFotos: escolhido.qtdFotos\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        192
+      ],
+      "id": "a2ac4f05-b6fd-4998-92c9-93674c8292f9",
+      "name": "qntd de fotos"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst dados = $input.first().json;\n\nconst mensagem = [\n  dados.error?.message,\n  dados.error?.description,\n  dados.error?.cause?.message,\n  typeof dados.error === 'string' ? dados.error : '',\n  dados.message,\n  dados.description,\n  JSON.stringify(dados)\n]\n.filter(Boolean)\n.join(' | ');\n\nconst erroPermitido =\n  mensagem.toLowerCase().includes(\n    'the service is receiving too many requests from you'\n  );\n\n// QUALQUER OUTRO ERRO TERMINA A EXECUÇÃO\nif (!erroPermitido) {\n  throw new Error(\n    `GROQ — ERRO NÃO PERMITIDO: ${mensagem.slice(0, 1500)}`\n  );\n}\n\n// APENAS O ERRO DE LIMITE É RECUPERÁVEL\nreturn [{\n  json: {\n    estado: 'PARCIAL',\n    statusNotion: 'PS',\n    tipoErro: 'LIMITE_GROQ',\n    interromperGroq: true,\n    mensagem: 'Limite de pedidos Groq atingido.'\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        416
+      ],
+      "id": "0395a848-9b1f-4899-b939-da9b3b4c3573",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst dados = $input.first().json;\n\nif (!['VALIDADO', 'PARCIAL', 'PENDENTE'].includes(dados.estado)) {\n  throw new Error(`Estado inválido: ${dados.estado}`);\n}\n\nif (!dados.pageId || !Array.isArray(dados.fotos)) {\n  throw new Error('Dados incompletos para publicação.');\n}\n\nconst statusNotion =\n  dados.estado === 'VALIDADO' ? 'Script pronto' : 'PS';\n\nconst documento = dados.estado === 'VALIDADO'\n  ? dados\n  : {\n      ...dados,\n      fotosProcessadas: dados.fotos.length,\n      fotosPendentes: dados.pendentes?.length ?? 0\n    };\n\nif (dados.estado !== 'VALIDADO' &&\n    (!Array.isArray(dados.pendentes) ||\n     documento.fotosProcessadas + documento.fotosPendentes !== dados.totalFotos)) {\n  throw new Error('Contagem do processamento parcial inconsistente.');\n}\n\nconst conteudo = JSON.stringify(documento, null, 2);\nconst partes = conteudo.match(/[\\s\\S]{1,1900}/g) || [];\n\nreturn [{\n  json: {\n    pageId: dados.pageId,\n    statusNotion,\n    blocks: [{\n      object: \"block\",\n      type: \"code\",\n      code: {\n        language: \"json\",\n        rich_text: partes.map(parte => ({\n          type: \"text\",\n          text: { content: parte }\n        }))\n      }\n    }]\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        416
+      ],
+      "id": "cbb78137-3015-4f2e-9a29-cf441ef06c4d",
+      "name": "RECUPERAR FOTOS"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "value": "={{ $('HTTP Request').item.json.pageId }}",
+          "mode": "id"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Status|select",
+              "selectValue": "PS"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        864,
+        432
+      ],
+      "id": "db3dcf7f-a9d0-42ad-b6ae-73d9be1e842a",
+      "name": "Update a database page1",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Só o erro de limite da Groq é recuperável.\nconst erro = $input.first().json;\nconst mensagem = [\n  erro.error?.message,\n  erro.error?.description,\n  erro.error?.cause?.message,\n  typeof erro.error === 'string' ? erro.error : '',\n  erro.message,\n  erro.description,\n  JSON.stringify(erro)\n].filter(Boolean).join(' | ');\n\nif (!mensagem.toLowerCase().includes(\n  'the service is receiving too many requests from you'\n)) {\n  throw new Error(`GROQ: erro não recuperável: ${mensagem.slice(0, 1200)}`);\n}\n\nconst todas = $('qntd de fotos').all().map(item => item.json);\nconst indiceFalha = Number($('Loop Over Items').context.currentRunIndex);\n\nif (!Number.isInteger(indiceFalha) ||\n    indiceFalha < 0 || indiceFalha >= todas.length) {\n  throw new Error('Não foi possível identificar a fotografia do erro pelo índice do loop.');\n}\n\nreturn [{ json: {\n  indiceFalha,\n  fotoFalhou: todas[indiceFalha].pid,\n  urlFalhou: todas[indiceFalha].fotoUrl,\n  tipoErro: 'LIMITE_GROQ',\n  mensagem\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        560
+      ],
+      "id": "f2b081f7-ddb5-4713-a229-c1ccc7cbba74",
+      "name": "Classificar erro GROQ"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recupera apenas as respostas de SUCESSO anteriores à chamada que atingiu o limite.\n// Se não for possível associar resposta/fotografia, falha sem escrever no Notion.\nconst info = $input.first().json;\nif (info.tipoErro !== 'LIMITE_GROQ') {\n  throw new Error('Esta saída só aceita erro de limite Groq.');\n}\n\nconst originais = $('qntd de fotos').all().map(item => item.json);\nconst indiceFalha = Number(info.indiceFalha);\nconst totalFotos = originais.length;\nif (!totalFotos || !Number.isInteger(indiceFalha) ||\n    indiceFalha < 0 || indiceFalha >= totalFotos) {\n  throw new Error('Índice ou quantidade de fotos inválidos para recuperação.');\n}\n\nconst primeira = originais[0];\nconst pageId = primeira.pageId;\nconst alojamento = primeira.nome;\nconst urlAnuncio = primeira.urlAlojamento;\nif (!pageId || !alojamento || !urlAnuncio ||\n    originais.some((f, i) =>\n      f.pageId !== pageId || f.urlAlojamento !== urlAnuncio ||\n      f.nome !== alojamento || f.pid !== i + 1 ||\n      f.qtdFotos !== totalFotos ||\n      typeof f.fotoUrl !== 'string' || !f.fotoUrl.startsWith('https://')\n    ) || new Set(originais.map(f => f.fotoUrl)).size !== totalFotos) {\n  throw new Error('Fotografias/identificação inconsistentes; Notion não será alterado.');\n}\nif (originais[indiceFalha].fotoUrl !== info.urlFalhou ||\n    originais[indiceFalha].pid !== info.fotoFalhou) {\n  throw new Error('A fotografia do erro não corresponde ao item do loop.');\n}\n\nconst etiquetas = {\n  'Balcão':14, 'Cafeteria':16, \"Child's bedroom\":20,\n  'Cozinha':1, 'Detalhes':10, 'Exterior':9, 'Fachada':2,\n  'Garagem':8, 'Jardim':5, 'Outros':11, 'Piscina':6,\n  'Plano':18, 'Quarto de banho':4, 'Quarto':3,\n  'Receção':13, 'Resort':19, 'Sala de estar':12,\n  'Sala de jantar':15, 'Terraço':7, 'Visualizações':17\n};\nconst textoOk = s => typeof s === 'string' && !!s.trim();\nconst fotos = [];\n\nfor (let i = 0; i < indiceFalha; i++) {\n  let itensDaChamada;\n  try {\n    // 0: saída de sucesso; i: índice da chamada Groq dentro do loop.\n    itensDaChamada = $('GROQ').all(0, i);\n  } catch (e) {\n    throw new Error(`Não foi possível recuperar a resposta Groq da foto ${i + 1}: ${e.message}`);\n  }\n  if (!Array.isArray(itensDaChamada) || itensDaChamada.length !== 1) {\n    throw new Error(`Foto ${i + 1}: esperava exatamente uma resposta Groq.`);\n  }\n  const resposta = itensDaChamada[0].json;\n  if (resposta.error) {\n    throw new Error(`Foto ${i + 1}: não existe uma resposta bem-sucedida.`);\n  }\n  const texto = resposta.choices?.[0]?.message?.content;\n  if (!textoOk(texto)) {\n    throw new Error(`Foto ${i + 1}: resposta Groq sem JSON de conteúdo.`);\n  }\n  let dados;\n  try {\n    dados = JSON.parse(texto.replace(/^```(?:json)?\\s*/i, '')\n      .replace(/\\s*```$/i, '').trim());\n  } catch (e) {\n    throw new Error(`Foto ${i + 1}: JSON Groq inválido: ${e.message}`);\n  }\n  if (!textoOk(dados?.etiqueta) || !etiquetas[dados.etiqueta]) {\n    throw new Error(`Foto ${i + 1}: etiqueta inexistente ou inválida.`);\n  }\n  const traducoes = {};\n  for (const idioma of ['pt', 'es', 'en', 'fr']) {\n    const t = dados.traducoes?.[idioma] ?? {};\n    const title = t.title ?? t.titulo ?? '';\n    const descricao = t.descricao ?? t.description ?? t.descripcion ?? '';\n    const alt = t.alt ?? '';\n    if (!textoOk(title) || title.length > 70 ||\n        !textoOk(descricao) || !textoOk(alt) || alt.length > 125) {\n      throw new Error(`Foto ${i + 1}: campos de ${idioma} incompletos ou inválidos.`);\n    }\n    traducoes[idioma] = {title, descricao, alt};\n  }\n  fotos.push({\n    numero:i+1,\n    url:originais[i].fotoUrl,\n    nome:traducoes.pt.title,\n    etiqueta:{nome:dados.etiqueta, id:etiquetas[dados.etiqueta]},\n    acessibilidade:false,\n    traducoes,\n    sucesso:true\n  });\n}\n\nconst pendentes = originais.slice(indiceFalha).map(f => ({\n  numero:f.pid,\n  url:f.fotoUrl\n}));\nif (fotos.length + pendentes.length !== totalFotos || !pendentes.length) {\n  throw new Error('Contagem do lote parcial inconsistente.');\n}\nreturn [{ json: {\n  estado: fotos.length ? 'PARCIAL' : 'PENDENTE',\n  alojamento,\n  pageId,\n  urlAnuncio,\n  totalFotos,\n  fotos,\n  fotosProcessadas:fotos.length,\n  pendentes,\n  proximaFoto:pendentes[0].numero\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        560
+      ],
+      "id": "6cc814d0-626f-44e3-9a0d-c3fd7c36b385",
+      "name": "Preparar PARCIAL"
+    },
+    {
+      "parameters": {
+        "jsCode": "const dados = $input.first().json;\nif (!['PARCIAL', 'PENDENTE'].includes(dados.estado)) {\n  throw new Error(`Estado não permitido para publicação: ${dados.estado}`);\n}\nif (!dados.pageId || !Array.isArray(dados.fotos) ||\n    !Number.isInteger(dados.totalFotos) || dados.totalFotos < 1) {\n  throw new Error('Dados incompletos para publicação no Notion.');\n}\nif (dados.estado === 'VALIDADO') {\n  if (dados.fotos.length !== dados.totalFotos ||\n      dados.fotos.some(f => f.sucesso !== true)) {\n    throw new Error('VALIDADO sem todas as fotos completas.');\n  }\n} else {\n  if (!Array.isArray(dados.pendentes) || !dados.pendentes.length ||\n      dados.fotos.length + dados.pendentes.length !== dados.totalFotos ||\n      dados.proximaFoto !== dados.pendentes[0].numero) {\n    throw new Error('PARCIAL/PENDENTE sem contagem ou URLs consistentes.');\n  }\n  const numeros = [...dados.fotos.map(f=>f.numero), ...dados.pendentes.map(f=>f.numero)];\n  if (new Set(numeros).size !== dados.totalFotos ||\n      numeros.some(n=>!Number.isInteger(n) || n<1 || n>dados.totalFotos) ||\n      dados.pendentes.some(f=>typeof f.url!=='string' || !f.url.startsWith('https://'))) {\n    throw new Error('PARCIAL/PENDENTE com números ou URLs inválidos.');\n  }\n}\nconst statusNotion = 'PS';\nconst conteudo = JSON.stringify(dados, null, 2);\nconst partes = conteudo.match(/[\\s\\S]{1,1900}/g) || [];\nif (partes.length > 100) {\n  throw new Error('JSON demasiado grande para um único bloco Notion.');\n}\nreturn [{json:{\n  pageId:dados.pageId,\n  statusNotion,\n  blocks:[{\n    object:'block', type:'code',\n    code:{language:'json',rich_text:partes.map(parte=>({\n      type:'text',text:{content:parte}\n    }))}\n  }]\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        560
+      ],
+      "id": "20c21ed5-dc76-4bb5-a97a-8e986711640d",
+      "name": "Formatar PARCIAL Notion"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.notion.com/v1/blocks/{{ $json.pageId }}/children",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  children: $json.blocks\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1536,
+        560
+      ],
+      "id": "078386ec-7ab3-49b4-8d71-560cbf2143e8",
+      "name": "Publicar PARCIAL no Notion",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.notion.com/v1/pages/' + $('Formatar PARCIAL Notion').first().json.pageId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "notionApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { properties: { Status: { select: { name: 'PS' } } } } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1792,
+        560
+      ],
+      "id": "c9967ad5-98c6-490e-90d7-e82e8a926155",
+      "name": "Marcar PS no Notion",
+      "credentials": {
+        "notionApi": {
+          "id": "uXqUIyPGZkNo6AeW",
+          "name": "Notion account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get a database": {
+      "main": [
+        [
+          {
+            "node": "Get many database pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many database pages": {
+      "main": [
+        [
+          {
+            "node": "Code_1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_1": {
+      "main": [
+        [
+          {
+            "node": "HTTP_1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_1": {
+      "main": [
+        [
+          {
+            "node": "Code_4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_4": {
+      "main": [
+        [
+          {
+            "node": "qntd de fotos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "GROQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GROQ": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Preparar JSON Avantio Lote1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar JSON Avantio Lote1": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Atualiza o Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atualiza o Notion": {
+      "main": [
+        [
+          {
+            "node": "Update a database page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get a database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "qntd de fotos": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "RECUPERAR FOTOS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RECUPERAR FOTOS": {
+      "main": [
+        [
+          {
+            "node": "Update a database page1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar erro GROQ": {
+      "main": [
+        [
+          {
+            "node": "Preparar PARCIAL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar PARCIAL": {
+      "main": [
+        [
+          {
+            "node": "Formatar PARCIAL Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatar PARCIAL Notion": {
+      "main": [
+        [
+          {
+            "node": "Publicar PARCIAL no Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publicar PARCIAL no Notion": {
+      "main": [
+        [
+          {
+            "node": "Marcar PS no Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "ab28beb8-cb56-498d-aaf3-b0b2d4699209",
+  "meta": {
+    "instanceId": "c4912bb2604277389a4f191b1fd9990f0f15105fac5511fc96894cb26b2d540d"
+  },
+  "nodeGroups": [],
+  "id": "fmg0gyhqVBArFKr7",
+  "tags": [
+    {
+      "updatedAt": "2026-10-02T12:53:48.959Z",
+      "createdAt": "2026-10-02T12:53:48.959Z",
+      "id": "B06teHh1PhA4XhVR",
+      "name": "MTPhomes"
+    }
+  ]
+}

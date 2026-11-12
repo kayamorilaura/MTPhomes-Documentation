@@ -1,0 +1,95 @@
+{
+  "name": "MTPHomes | Airbnb v2 - download para proposta (com resposta JSON)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "airbnb-formatar-v1",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ca1653a0-903a-44fa-becc-18fa138ae69c",
+      "name": "Receber exportacao Airbnb",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        32,
+        -128
+      ],
+      "webhookId": "1527a3f7-7e34-4984-9eb3-dfb9637b33d0",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "OgMPtbY42ZcpZ1DJ",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gerador idêntico ao núcleo da v3. Sem IA, sem escrita no Airbnb.\n// Executa uma vez para o JSON inteiro recebido por Webhook.\n/**\n * Comparação determinística entre Descrição e A sua propriedade do Airbnb.\n * Apenas prepara propostas. Não toca no navegador nem publica conteúdo.\n * Usa como fonte o backup de cada alojamento nos 4 idiomas, sem IA.\n */\n\nconst IDIOMAS = Object.freeze(['pt', 'en', 'es', 'fr']);\nconst SECCOES = Object.freeze([\n  'descricao', 'propriedade', 'acesso', 'comunicacao', 'outras_informacoes'\n]);\n\nfunction normalizarParaComparar(s) {\n  return String(s)\n    .replace(/<br\\s*\\/?>/gi, ' ')\n    .replace(/&nbsp;|\\u00a0/gi, ' ')\n    .replace(/\\r\\n?/g, '\\n')\n    .normalize('NFC')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction erro(status, motivo, extra = {}) {\n  return { estado: status, motivo, podePropor: false, ...extra };\n}\n\n/**\n * Nunca apaga automaticamente a introdução só porque uma parte é repetida.\n * Uma introdução com informação adicional requer aprovação do idioma.\n */\nfunction analisarIntroducao(descricao, propriedade) {\n  if (typeof descricao !== 'string' || typeof propriedade !== 'string') {\n    return erro('bloqueado_tipo_invalido', 'Ambos os campos precisam ser texto.');\n  }\n  // Comparar o primeiro parágrafo de cada secção, não a Descrição inteira.\n  // Alguns anúncios têm um segundo parágrafo também em Descrição; ele deve\n  // ser preservado, mas não pode bloquear a remoção da introdução duplicada.\n  const primeiroDelimitadorDescricao = /<br\\s*\\/?>|\\r?\\n[ \\t]*\\r?\\n/i.exec(descricao);\n  const primeiroParagrafoDescricao = primeiroDelimitadorDescricao\n    ? descricao.slice(0, primeiroDelimitadorDescricao.index)\n    : descricao;\n  const curta = normalizarParaComparar(primeiroParagrafoDescricao);\n  if (curta.length < 80) {\n    return erro('bloqueado_descricao_curta', 'Primeiro parágrafo da Descrição com menos de 80 caracteres.');\n  }\n  // Encontrar o PRIMEIRO delimitador de parágrafo, sem escolher um posterior.\n  const delimitadores = [/<br\\s*\\/?>/gi, /\\r?\\n[ \\t]*\\r?\\n/g];\n  const encontrados = delimitadores.flatMap(rx => [...propriedade.matchAll(rx)]);\n  encontrados.sort((a, b) => a.index - b.index);\n  const limite = encontrados[0];\n  if (!limite) return erro('bloqueado_sem_delimitador', 'Não foi encontrado <br> nem linha em branco delimitando o primeiro parágrafo.');\n  const introducao = propriedade.slice(0, limite.index);\n  const introducaoNormalizada = normalizarParaComparar(introducao);\n  if (!introducaoNormalizada.startsWith(curta)) {\n    return erro('bloqueado_sem_repeticao', 'Primeiro parágrafo da Descrição não coincide com o início da Propriedade.');\n  }\n  // Não aceitar correspondências que cortam uma palavra ao meio.\n  const seguinte = introducaoNormalizada[curta.length] || '';\n  if (seguinte && !/\\s|[.,;:!?]/u.test(seguinte)) {\n    return erro('bloqueado_meia_palavra', 'A coincidência termina a meio de uma palavra.');\n  }\n  const exclusivo = introducaoNormalizada.slice(curta.length).trim();\n  const inicioResto = limite.index + limite[0].length;\n  const resto = propriedade.slice(inicioResto).replace(/^(?:\\s|<br\\s*\\/?>)*/i, '');\n  if (!resto.trim() || !propriedade.endsWith(resto)) {\n    return erro('bloqueado_sufixo_invalido', 'Remoção deixaria o campo vazio ou não preservaria o sufixo literal.');\n  }\n  return {\n    estado: exclusivo ? 'aguarda_aprovacao_trecho_exclusivo' : 'repeticao_exata',\n    motivo: exclusivo\n      ? 'Primeiro parágrafo começa pela Descrição, mas contém frases adicionais não repetidas.'\n      : 'Primeiro parágrafo da Propriedade repete o primeiro parágrafo da Descrição.',\n    podePropor: true,\n    percentualIntroducaoRepetido: Number((curta.length / introducaoNormalizada.length * 100).toFixed(1)),\n    caracteresIntroducaoRemovida: propriedade.length - resto.length,\n    introducaoRemovida: introducao,\n    trechoExclusivoDaIntroducao: exclusivo,\n    inicioProposto: resto.slice(0, 140),\n    finalPreservadoLiteralmente: true,\n    // Mantemos como sugestão para inspeção, mesmo quando ainda não aprovada.\n    candidato: resto\n  };\n}\n\nfunction validarBackup(backup) {\n  if (!backup || backup.origem !== 'airbnb' || !/^\\d+$/.test(String(backup.listingId || ''))) {\n    throw new Error('Backup inválido: esperado origem=airbnb e listingId numérico.');\n  }\n  for (const secao of SECCOES) {\n    if (!backup.seccoes?.[secao] || typeof backup.seccoes[secao] !== 'object') {\n      throw new Error(`Backup incompleto: falta a secção ${secao}.`);\n    }\n    for (const lang of IDIOMAS) {\n      if (typeof backup.seccoes[secao][lang] !== 'string') {\n        throw new Error(`Backup incompleto: falta ${secao}/${lang} (vazio é válido, ausente não).`);\n      }\n    }\n  }\n}\n\nfunction prepararMultilingue(backup, {aprovados = [], propertyId = undefined, esperadoListingId = undefined} = {}) {\n  validarBackup(backup);\n  const listingId = String(backup.listingId);\n  if (esperadoListingId && String(esperadoListingId) !== listingId) {\n    throw new Error(`ID incompatível: esperava ${esperadoListingId}, mas o backup é ${listingId}.`);\n  }\n  const ok = new Set(aprovados);\n  for (const lang of ok) if (!IDIOMAS.includes(lang)) throw new Error(`Idioma não suportado: ${lang}`);\n  const proposta = {\n    schemaVersion: 1,\n    listingId,\n    ...(propertyId ? { propertyId: String(propertyId) } : {}),\n    origem: 'proposta_para_revisao',\n    dataCriacao: new Date().toISOString(),\n    revisaoObrigatoria: true,\n    publicacaoPermitida: false,\n    seccoes: {},\n    analiseDuplicacao: {},\n    avisos: [\n      'Não publica nem guarda conteúdo no Airbnb.',\n      'Toda remoção de introdução com conteúdo exclusivo precisa de aprovação explícita por idioma.',\n      'Verificar cada texto após o Autofill, antes de guardar manualmente no Airbnb.',\n      'Não são criadas traduções, nem alteradas secções de acesso, comunicação e outras informações.'\n    ]\n  };\n  for (const secao of SECCOES) {\n    proposta.seccoes[secao] = {};\n    for (const idioma of IDIOMAS) {\n      const original = backup.seccoes[secao][idioma];\n      proposta.seccoes[secao][idioma] = {\n        original,\n        proposto: original,\n        alteracao: false,\n        estado: 'preservado',\n        origem: 'airbnb_original'\n      };\n    }\n  }\n  const relatorio = {\n    listingId,\n    idiomas: {},\n    aviso: 'Revisar os trechos exclusivos da introdução ANTES de autorizar a sua remoção.'\n  };\n  for (const idioma of IDIOMAS) {\n    const desc = backup.seccoes.descricao[idioma];\n    const prop = backup.seccoes.propriedade[idioma];\n    const analise = analisarIntroducao(desc, prop);\n    // `candidato` contém o texto completo e fica disponível apenas na análise;\n    // o valor proposto NÃO muda enquanto houver informação exclusiva sem aprovação.\n    const { candidato, ...detalhes } = analise;\n    const aprovado = ok.has(idioma);\n    if (aprovado && !analise.podePropor) {\n      throw new Error(`${idioma}: aprovação pedida, mas análise bloqueada: ${analise.motivo}`);\n    }\n    let aplicar = false;\n    if (analise.podePropor && (!analise.trechoExclusivoDaIntroducao || aprovado)) {\n      aplicar = true;\n      proposta.seccoes.propriedade[idioma] = {\n        original: prop,\n        proposto: candidato,\n        alteracao: prop !== candidato,\n        estado: 'proposta_requer_revisao',\n        origem: 'airbnb_original_comparado_com_descricao'\n      };\n    }\n    proposta.analiseDuplicacao[idioma] = {\n      ...detalhes,\n      aprovacaoRemocaoTrechoExclusivo: aprovado,\n      alteracaoIncluida: aplicar\n    };\n    relatorio.idiomas[idioma] = {\n      estado: detalhes.estado,\n      coincidencia: Boolean(analise.podePropor),\n      percentualIntroducaoRepetido: detalhes.percentualIntroducaoRepetido ?? null,\n      caracteresAntes: prop.length,\n      caracteresDepois: aplicar ? candidato.length : prop.length,\n      trechoExclusivoDaIntroducao: detalhes.trechoExclusivoDaIntroducao ?? '',\n      aprovacaoRemocaoTrechoExclusivo: aprovado,\n      alteracaoIncluida: aplicar,\n      inicioProposto: detalhes.inicioProposto || '',\n      finalPreservadoLiteralmente: detalhes.finalPreservadoLiteralmente === true\n    };\n  }\n  return {proposta, relatorio};\n}\n\nconst pedido = $input.first()?.json;\nconst backup = pedido?.body ?? pedido;\nif (!backup || typeof backup !== 'object' || Array.isArray(backup)) {\n  throw new Error('Webhook sem JSON de captura Airbnb.');\n}\n// Números grandes devem ser strings para não perder algarismos.\nif (typeof backup.listingId !== 'string' || !/^\\d+$/.test(backup.listingId)) {\n  throw new Error('listingId deve ser uma string numérica.');\n}\nif (JSON.stringify(backup).length > 1000000) {\n  throw new Error('Captura demasiado grande para este piloto (limite 1 MB).');\n}\nconst {proposta, relatorio} = prepararMultilingue(backup, {aprovados: []});\nconst rows = IDIOMAS.map(idioma => ({idioma, ...relatorio.idiomas[idioma]}));\nconst markdown = [\n  `# Airbnb ${proposta.listingId} — análise automática`,\n  '',\n  'PENDENTE DE REVISÃO. Nenhuma publicação foi efetuada.',\n  '',\n  '| Idioma | Repetição confirmada | Antes → Proposto | Estado |',\n  '|---|---|---|---|',\n  ...rows.map(r => `| ${r.idioma.toUpperCase()} | ${r.coincidencia ? 'Sim' : 'Não'} | ${r.caracteresAntes} → ${r.caracteresDepois} | ${r.estado} |`),\n  '',\n  '## Trechos exclusivos do primeiro parágrafo',\n  '',\n  ...rows.flatMap(r => [`### ${r.idioma.toUpperCase()}`, r.trechoExclusivoDaIntroducao || '(nenhum)', '']),\n  '## Próxima ação',\n  'Ler os trechos exclusivos; aprovar somente os idiomas revistos com a CLI v3.',\n  'As 5 secções e os 4 idiomas originais permanecem disponíveis no JSON de entrada arquivado.',\n  'Não aprovar, preencher ou guardar automaticamente.',\n  ''\n].join('\\n');\nreturn [{json: {\n  ok: true,\n  schemaVersion: 1,\n  listingId: proposta.listingId,\n  status: rows.some(x => x.estado === 'aguarda_aprovacao_trecho_exclusivo') ? 'REVISAO_NECESSARIA' : 'ANALISE_PRONTA',\n  proposta,\n  diferencas: relatorio,\n  relatorioMarkdown: markdown\n}}];\n"
+      },
+      "id": "d8a0fa11-c88c-4a6e-9bc7-a4d373467feb",
+      "name": "Formatar PT EN ES FR (v3, seguro)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "0412e6e2-6c41-4c9a-96c8-29c93066c477",
+      "name": "Responder proposta ao Windows",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        656,
+        -128
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Receber exportacao Airbnb": {
+      "main": [
+        [
+          {
+            "node": "Formatar PT EN ES FR (v3, seguro)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatar PT EN ES FR (v3, seguro)": {
+      "main": [
+        [
+          {
+            "node": "Responder proposta ao Windows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "304a1b33-a857-4736-a23b-b3127884b02e",
+  "meta": {
+    "instanceId": "c4912bb2604277389a4f191b1fd9990f0f15105fac5511fc96894cb26b2d540d"
+  },
+  "nodeGroups": [],
+  "id": "z9flA4lxib2FODZ5",
+  "tags": []
+}

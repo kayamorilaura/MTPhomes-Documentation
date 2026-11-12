@@ -1,0 +1,183 @@
+// ==UserScript==
+// @name         MTPHomes - Airbnb Autofill (revisão segura)
+// @namespace    laura.mtphomes.airbnb
+// @version      0.1.0
+// @description  Importa proposta.json, compara com o editor, faz backup e preenche apenas o painel aprovado; nunca clica Guardar.
+// @match        https://www.airbnb.pt/hosting/listings/editor/*
+// @match        https://www.airbnb.com/hosting/listings/editor/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+  'use strict';
+  const match = location.pathname.match(/^\/hosting\/listings\/editor\/(\d+)\/details\/description\/?$/);
+  if (!match || document.getElementById('mtp-airbnb-autofill')) return;
+  const listingId = match[1];
+
+  // Mesma correspondência do extrator v0.2/v0.3. Não procurar campos noutras páginas.
+  const SECTIONS = new Map([
+    ['Descrição', 'descricao'],
+    ['A sua propriedade', 'propriedade'],
+    ['Acesso dos hóspedes', 'acesso'],
+    ['Preferências de comunicação', 'comunicacao'],
+    ['Outras informações a ter em conta', 'outras_informacoes']
+  ]);
+  const LANGS = ['pt', 'en', 'es', 'fr'];
+  let proposta = null;
+  let preparacao = null;
+  let aplicado = null;
+
+  const panel = document.createElement('section');
+  panel.id = 'mtp-airbnb-autofill';
+  panel.style.cssText = 'position:fixed;left:16px;bottom:16px;width:340px;max-width:calc(100vw - 32px);max-height:65vh;overflow:auto;background:#fff;color:#202020;border:1px solid #999;border-radius:12px;box-shadow:0 6px 25px #0004;z-index:2147483646;padding:14px;font:13px/1.45 Arial,sans-serif;';
+  panel.innerHTML = '<strong style="font-size:15px">MTPHomes · Autofill v0.1</strong><div id="mtp-id" style="margin:6px 0"></div><p id="mtp-status" role="status" style="white-space:pre-wrap"></p><div id="mtp-actions"></div><div id="mtp-preview" style="margin-top:9px"></div>';
+  const idLabel = panel.querySelector('#mtp-id');
+  const status = panel.querySelector('#mtp-status');
+  const actions = panel.querySelector('#mtp-actions');
+  const preview = panel.querySelector('#mtp-preview');
+  idLabel.textContent = `Airbnb: ${listingId} · Sem publicação automática`;
+  function say(msg, error = false) { status.textContent = msg; status.style.color = error ? '#b91c1c' : '#1f2937'; }
+  function button(label, handler) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label;
+    b.style.cssText = 'padding:8px;margin:4px 4px 4px 0;border:1px solid #aaa;border-radius:7px;cursor:pointer;background:#f5f5f5;color:#111';
+    b.addEventListener('click', () => { try { const r = handler(); if (r?.catch) r.catch(e => say(e.message, true)); } catch (e) { say(e.message, true); } });
+    actions.appendChild(b);
+    return b;
+  }
+  function activeSection() {
+    const headings = [...document.querySelectorAll('h2')].filter(h => h.getClientRects().length && SECTIONS.has(h.textContent.trim()));
+    if (headings.length !== 1) throw new Error('Secção ativa ambígua: esperava um único H2.');
+    return SECTIONS.get(headings[0].textContent.trim());
+  }
+  function fields() {
+    const result = {};
+    for (const lang of LANGS) {
+      const matches = [...document.querySelectorAll(`textarea[name="${lang}"]`)].filter(t => t.getClientRects().length);
+      if (matches.length !== 1 || !matches[0].id.startsWith('listing-description-')) throw new Error(`Campo ${lang} não corresponde ao mapeamento confirmado.`);
+      result[lang] = matches[0];
+    }
+    return result;
+  }
+  function checkData(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('JSON não é um objeto.');
+    if (String(value.listingId) !== listingId) throw new Error(`ID incorreto! O ficheiro é ${value.listingId}; a página é ${listingId}.`);
+    if (listingId === '25233047' && value.propertyId && String(value.propertyId) !== '684090') throw new Error('O ID MTPHomes não corresponde ao Algoz.');
+    if (!value.seccoes || typeof value.seccoes !== 'object') throw new Error('Falta seccoes no JSON.');
+    let count = 0;
+    for (const sec of SECTIONS.values()) {
+      const row = value.seccoes[sec];
+      if (row === undefined) continue;
+      if (!row || typeof row !== 'object') throw new Error(`Secção ${sec} inválida.`);
+      for (const lang of LANGS) {
+        const f = row[lang];
+        if (f === undefined) continue;
+        // Só aceita o contrato proposta.json. JSON original não é proposta de edição.
+        if (!f || typeof f.original !== 'string' || typeof f.proposto !== 'string') throw new Error(`${sec}/${lang} precisa de original e proposto.`);
+        if (f.original !== f.proposto) {
+          if (f.proposto.trim() === '') throw new Error(`Recuso apagar o campo ${sec}/${lang}.`);
+          count++;
+        }
+      }
+    }
+    if (!count) throw new Error('Nenhuma diferença proposta. O JSON original não deve ser usado como proposta.');
+    return count;
+  }
+  function plan() {
+    if (!proposta) throw new Error('Carrega primeiro um proposta.json.');
+    const sec = activeSection();
+    const els = fields();
+    const row = proposta.seccoes[sec] || {};
+    const changes = [];
+    for (const lang of LANGS) {
+      const f = row[lang];
+      if (!f || f.original === f.proposto) continue;
+      if (els[lang].value !== f.original) throw new Error(`${sec}/${lang}: o texto no Airbnb mudou desde a captura. Faz nova captura antes de editar.`);
+      const limit = els[lang].maxLength > 0 ? els[lang].maxLength : (sec === 'descricao' ? 500 : null);
+      if (limit && f.proposto.length > limit) throw new Error(`${sec}/${lang}: ${f.proposto.length} caracteres excedem o limite ${limit}.`);
+      changes.push({ lang, original:f.original, proposto:f.proposto });
+    }
+    if (!changes.length) throw new Error(`Sem alterações propostas para o painel ${sec}. Abre outra secção.`);
+    return { sec, changes };
+  }
+  function clearPreview() { preview.replaceChildren(); preparacao = null; }
+  function showPreview() {
+    clearPreview();
+    const result = plan();
+    preparacao = result;
+    const h = document.createElement('strong'); h.textContent = `${result.sec}: ${result.changes.length} idioma(s) a alterar`;
+    preview.appendChild(h);
+    for (const change of result.changes) {
+      const item = document.createElement('details');
+      const title = document.createElement('summary');
+      title.textContent = `${change.lang.toUpperCase()} · ${change.original.length} → ${change.proposto.length} caracteres`;
+      item.appendChild(title);
+      for (const [label, value] of [['Antes', change.original],['Depois', change.proposto]]) {
+        const p=document.createElement('div');p.textContent=label;item.appendChild(p);
+        const t=document.createElement('textarea'); t.readOnly=true; t.value=value;
+        t.style.cssText='display:block;box-sizing:border-box;width:100%;height:90px;margin-bottom:6px;font:12px monospace;';
+        item.appendChild(t);
+      }
+      preview.appendChild(item);
+    }
+    say('Pré-visualização preparada. Confirma os textos antes de preencher.');
+  }
+  function download(name, data) {
+    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+  }
+  function setReactText(field, value) {
+    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+    if (!setter) throw new Error('Setter de textarea indisponível.');
+    setter.call(field,value);
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+    field.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  async function stage() {
+    // Recalcular imediatamente antes de escrever: evita edição com dados desatualizados.
+    const p = plan();
+    if (!preparacao || preparacao.sec !== p.sec || JSON.stringify(preparacao.changes) !== JSON.stringify(p.changes)) throw new Error('Faz primeiro a pré-visualização deste painel.');
+    if (!window.confirm(`Preencher ${p.changes.length} campos de ${p.sec}? NÃO será clicado Guardar.`)) return;
+    const backup = Object.fromEntries(LANGS.map(lang => [lang, fields()[lang].value]));
+    download(`airbnb_${listingId}_${p.sec}_backup_antes.json`, {origem:'airbnb',listingId,secao:p.sec,dataExtracao:new Date().toISOString(),idiomas:backup});
+    for (const c of p.changes) setReactText(fields()[c.lang],c.proposto);
+    await new Promise(resolve => setTimeout(resolve,400));
+    if (activeSection() !== p.sec) throw new Error('Painel mudou durante a edição; verifica o editor antes de continuar.');
+    const now=fields();
+    const invalid=p.changes.filter(c=>now[c.lang].value!==c.proposto);
+    if (invalid.length) throw new Error(`React não manteve: ${invalid.map(x=>x.lang).join(', ')}. Não guardes; verifica os campos.`);
+    aplicado={sec:p.sec,backup,changes:p.changes};
+    clearPreview();
+    say(`Preenchimento confirmado no DOM (${p.changes.length} idioma(s)). NÃO guardado no Airbnb. Revê e clica Guardar manualmente no Airbnb.`);
+  }
+  function restore() {
+    if (!aplicado) throw new Error('Não existe uma edição desta sessão para reverter.');
+    if (activeSection()!==aplicado.sec) throw new Error('Abre novamente a secção editada antes de reverter.');
+    const now=fields();
+    if (aplicado.changes.some(c=>now[c.lang].value!==c.proposto)) throw new Error('Os campos mudaram após o preenchimento. Reversão automática bloqueada.');
+    if (!window.confirm('Repor textos anteriores neste painel (sem guardar)?')) return;
+    for(const c of aplicado.changes) setReactText(now[c.lang],aplicado.backup[c.lang]);
+    say('Valores anteriores repostos no editor. Se já guardaste no Airbnb, clica Guardar para efetivar a reversão.');
+    aplicado=null; clearPreview();
+  }
+  const picker=document.createElement('input');picker.type='file';picker.accept='.json,application/json';picker.hidden=true;
+  picker.addEventListener('change', async()=>{
+    try {
+      const file=picker.files?.[0]; if (!file) return;
+      const obj=JSON.parse(await file.text());
+      const count=checkData(obj);
+      proposta=obj; aplicado=null;clearPreview();
+      say(`Proposta carregada para ${listingId}: ${count} campo(s) diferente(s). Abre a secção desejada e pré-visualiza.`);
+    }catch(e){proposta=null;aplicado=null;clearPreview();say(e.message,true)}
+    finally{picker.value='';}
+  });
+  actions.appendChild(picker);
+  button('1 · Importar proposta.json',()=>picker.click());
+  button('2 · Pré-visualizar painel',showPreview);
+  button('3 · Preencher (sem guardar)',stage);
+  button('Reverter no editor',restore);
+  document.body.appendChild(panel);
+  say('Carrega um proposta.json. O extrator atual continua independente.');
+})();

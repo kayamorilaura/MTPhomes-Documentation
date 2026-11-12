@@ -1,0 +1,128 @@
+
+ // ==UserScript==
+ // @name         Avantio Fotos - Gestor em Lote
+ // @namespace    laura.avantio.fotos
+ // @version      1.0
+ // @description  Importa JSON e conta fotos na galeria Avantio
+ // @match        https://app.avantio.pro/*
+ // @grant        none
+ // ==/UserScript==
+
+(function () {
+  'use strict';
+
+  if (window.__avantioFotosGestor) return;
+  window.__avantioFotosGestor = true;
+
+  function iniciar() {
+    if (!document.body || document.getElementById('avf-painel')) return;
+
+    const painel = document.createElement('div');
+    painel.id = 'avf-painel';
+
+    Object.assign(painel.style, {
+      position: 'fixed',
+      right: '20px',
+      bottom: '20px',
+      width: '370px',
+      zIndex: '999999',
+      background: '#fff',
+      color: '#222',
+      padding: '16px',
+      border: '2px solid #555',
+      borderRadius: '10px',
+      boxShadow: '0 4px 18px #0004',
+      font: '14px Arial, sans-serif'
+    });
+
+    painel.innerHTML = `
+      <strong>Avantio Fotos — Gestor em lote</strong>
+      <p id="avf-contagem">A procurar fotografias na página…</p>
+      <label for="avf-json">Cola aqui o JSON completo do n8n:</label>
+      <textarea id="avf-json"
+        placeholder='{"totalFotos":17,"fotos":[...]}'
+        style="box-sizing:border-box;width:100%;height:150px;margin-top:8px"></textarea>
+      <button id="avf-verificar" style="margin-top:8px">
+        Verificar JSON e galeria
+      </button>
+      <button id="avf-fechar" style="float:right;margin-top:8px">
+        Fechar
+      </button>
+      <pre id="avf-resultado"
+        style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    `;
+
+    document.body.appendChild(painel);
+
+    function obterFotos() {
+      return [...document.querySelectorAll(
+        'li.imagenGaleria[data-idimg][data-orden]'
+      )].filter(li => li.querySelector('.editarElementGaleria'));
+    }
+
+    function atualizarContagem() {
+      const fotos = obterFotos();
+      document.getElementById('avf-contagem').textContent =
+        `Fotografias detetadas nesta página: ${fotos.length}`;
+      return fotos;
+    }
+
+    document.getElementById('avf-verificar').addEventListener('click', () => {
+      const resultado = document.getElementById('avf-resultado');
+      resultado.textContent = '';
+
+      let dados;
+      try {
+        dados = JSON.parse(document.getElementById('avf-json').value);
+      } catch (e) {
+        resultado.textContent = 'Erro: o texto não é um JSON válido.';
+        return;
+      }
+
+      if (!Array.isArray(dados.fotos) || dados.fotos.length === 0) {
+        resultado.textContent =
+          'Erro: o JSON tem de conter uma lista "fotos" não vazia.';
+        return;
+      }
+
+      const fotosPagina = atualizarContagem();
+      const ids = fotosPagina.map(li => li.dataset.idimg);
+      const ordens = fotosPagina.map(li => li.dataset.orden);
+
+      const semDados = dados.fotos.filter(f =>
+        !f.traducoes || !f.etiqueta
+      );
+
+      resultado.textContent = [
+        `JSON carregado: ${dados.alojamento || 'Alojamento sem nome'}`,
+        `Fotos no JSON: ${dados.fotos.length}`,
+        `Fotos na galeria visível: ${fotosPagina.length}`,
+        `Total indicado no JSON: ${dados.totalFotos ?? 'não indicado'}`,
+        '',
+        `IDs Avantio detetados: ${ids.length ? ids.join(', ') : 'nenhum'}`,
+        `Posições detetadas: ${ordens.length ? ordens.join(', ') : 'nenhuma'}`,
+        '',
+        semDados.length
+          ? `ATENÇÃO: ${semDados.length} foto(s) sem traduções ou etiqueta.`
+          : 'Estrutura básica do JSON: OK.',
+        '',
+        dados.fotos.length === fotosPagina.length
+          ? 'As quantidades coincidem. Ainda falta confirmar se as fotos estão na mesma ordem.'
+          : 'As quantidades são diferentes. Não preencher nada até investigar.'
+      ].join('\n');
+    });
+
+    document.getElementById('avf-fechar').addEventListener('click', () => {
+      painel.remove();
+      window.__avantioFotosGestor = false;
+    });
+
+    atualizarContagem();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', iniciar, { once: true });
+  } else {
+    iniciar();
+  }
+})();

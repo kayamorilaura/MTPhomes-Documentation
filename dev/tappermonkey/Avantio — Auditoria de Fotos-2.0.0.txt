@@ -1,0 +1,516 @@
+
+ // ==UserScript==
+ // @name         Avantio — Auditoria de Fotos
+ // @namespace    mtphomes.avantio.auditoria
+ // @version      2.0.0
+ // @description  Auditoria somente leitura: etiqueta e títulos, descrições e ALT em PT/ES/EN/FR. Copia o relatório.
+ // @match        https://app.avantio.pro/*
+ // @grant        none
+ // @run-at       document-idle
+ // ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const PANEL_ID = 'mtp-auditoria-fotos';
+  const LANGS = { PT: 10, ES: 1, EN: 2, FR: 5 };
+  const FIELDS = {
+    title: 'Título',
+    descripcion: 'Descrição',
+    alt: 'ALT'
+  };
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+  let results = [];
+  let running = false;
+  let started = false;
+
+  function galleryPhotos() {
+    const cards = $$('li.imagenGaleria[data-idimg]');
+    if (!cards.length) return [];
+
+    const photos = cards.map((card, index) => {
+      const id = card.getAttribute('data-idimg') || '';
+      const order = Number(card.getAttribute('data-orden'));
+      const link = $('a.editarElementGaleria[href]', card);
+
+      if (!/^\d+$/.test(id) || !link) return null;
+
+      const url = new URL(link.getAttribute('href'), location.href);
+
+      if (
+        url.origin !== location.origin ||
+        url.searchParams.get('record') !== id ||
+        url.searchParams.get('module') !== 'Fotos' ||
+        url.searchParams.get('action') !== 'EditView'
+      ) return null;
+
+      return {
+        id,
+        url: url.href,
+        order: Number.isInteger(order) ? order : index,
+        index
+      };
+    });
+
+    if (photos.some(p => !p)) {
+      throw Error(
+        'Há fotografias sem link de edição válido. Auditoria interrompida.'
+      );
+    }
+
+    if (new Set(photos.map(p => p.id)).size !== photos.length) {
+      throw Error('IDs de fotografia duplicados na galeria.');
+    }
+
+    const orders = photos.map(p => p.order);
+    if (new Set(orders).size === orders.length) {
+      photos.sort((a, b) => a.order - b.order);
+    }
+
+    return photos.map((p, i) => ({
+      ...p,
+      numero: i + 1
+    }));
+  }
+
+  function hasContent(value, doc) {
+    const decoder = doc.createElement('div');
+    decoder.innerHTML = String(value ?? '');
+
+    return decoder.textContent
+      .replace(/\u00a0/g, ' ')
+      .trim().length > 0;
+  }
+
+  function checkInput(doc, elementId, name, label, missing, absent) {
+    const element = doc.getElementById(elementId) ||
+      (name ? [...doc.getElementsByName(name)][0] : null);
+
+    if (!element) {
+      absent.push(label);
+      return;
+    }
+
+    const value =
+      element.value ??
+      element.getAttribute('value') ??
+      element.textContent;
+
+    if (!hasContent(value, doc)) {
+      missing.push(label);
+    }
+  }
+
+  function inspectPhoto(html, photo) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const form = $('form#EditView', doc);
+    const record = $('[name="record"]', form || doc)?.value;
+
+    if (!form || record !== photo.id) {
+      return {
+        ...photo,
+        status: 'NÃO VERIFICÁVEL',
+        reason: 'A resposta não contém o formulário esperado desta fotografia.',
+        missing: [],
+        absent: []
+      };
+    }
+
+    const missing = [];
+    const absent = [];
+
+    const tag =
+      $('select#selectTipos[name="SelectTipos"]', form) ||
+      $('select[name="SelectTipos"]', form);
+
+    if (!tag) {
+      absent.push('Etiqueta');
+    } else if (!String(tag.value || '').trim()) {
+      missing.push('Etiqueta');
+    }
+
+    for (const [language, code] of Object.entries(LANGS)) {
+      for (const [field, label] of Object.entries(FIELDS)) {
+        const base =
+          `i18n_easytour_descripciones_${field}_${photo.id}_${code}`;
+
+        const name =
+          `i18n[easytour_descripciones][${photo.id}][${code}][${field}]`;
+
+        checkInput(
+          doc,
+          base + '_hiddenField',
+          name,
+          `${language} - ${label}`,
+          missing,
+          absent
+        );
+      }
+    }
+
+    for (const [field, label] of Object.entries(FIELDS)) {
+      const visibleId =
+        `i18n_easytour_descripciones_${field}_${photo.id}_10`;
+
+      checkInput(
+        doc,
+        visibleId,
+        null,
+        `PT visível - ${label}`,
+        missing,
+        absent
+      );
+    }
+
+    return {
+      ...photo,
+      missing,
+      absent,
+      status: absent.length
+        ? 'NÃO VERIFICÁVEL'
+        : missing.length
+          ? 'INCOMPLETA'
+          : 'COMPLETA',
+      reason: absent.length
+        ? `Campos não encontrados: ${absent.join('; ')}`
+        : ''
+    };
+  }
+
+  function lineFor(result) {
+    const problems = [
+      ...result.missing,
+      ...result.absent.map(v => `${v} (não encontrado)`)
+    ];
+
+    const suffix = problems.length
+      ? `: ${problems.join('; ')}`
+      : result.reason
+        ? `: ${result.reason}`
+        : '';
+
+    return (
+      `Foto ${result.numero} (ID ${result.id}) — ` +
+      `${result.status}${suffix}`
+    );
+  }
+
+  function fullReport() {
+    if (!results.length) {
+      throw Error('Primeiro executa a auditoria.');
+    }
+
+    const needsReview = results.filter(
+      r => r.status !== 'COMPLETA'
+    );
+
+    const completed = results.filter(
+      r => r.status === 'COMPLETA'
+    ).length;
+
+    const unverified = results.filter(
+      r => r.status === 'NÃO VERIFICÁVEL'
+    ).length;
+
+    return [
+      'AVANTIO — AUDITORIA DE FOTOGRAFIAS',
+      `Galeria: ${location.href}`,
+      `Total: ${results.length} | Completas: ${completed} | A rever: ${needsReview.length}`,
+      `Não verificáveis: ${unverified}`,
+      '',
+      ...needsReview.map(lineFor),
+      needsReview.length ? '' : 'Nenhuma fotografia a rever.'
+    ].join('\n');
+  }
+
+  function render() {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+
+    const complete = results.filter(
+      r => r.status === 'COMPLETA'
+    ).length;
+
+    const review = results.filter(
+      r => r.status !== 'COMPLETA'
+    );
+
+    $('#mtp-summary', panel).textContent =
+      `Verificadas: ${results.length} | Completas: ${complete} | A rever: ${review.length}`;
+
+    const details = $('#mtp-details', panel);
+    const summary = $('summary', details);
+
+    summary.textContent = `Ver ${review.length} foto(s) a rever`;
+
+    const ul = $('ul', details);
+    ul.replaceChildren();
+
+    review.forEach(item => {
+      const li = document.createElement('li');
+      li.textContent = lineFor(item);
+      li.style.marginBottom = '7px';
+      ul.appendChild(li);
+    });
+
+    details.hidden = !results.length;
+
+    $('#mtp-copy', panel).disabled =
+      !results.length || running;
+  }
+
+  async function audit() {
+    if (running) return;
+
+    const panel = document.getElementById(PANEL_ID);
+    const status = $('#mtp-progress', panel);
+
+    let photos;
+
+    try {
+      photos = galleryPhotos();
+    } catch (e) {
+      status.textContent = `ERRO: ${e.message}`;
+      return;
+    }
+
+    if (!photos.length) {
+      status.textContent =
+        'Abre uma galeria de fotografias no Avantio.';
+      return;
+    }
+
+    results = [];
+    running = true;
+
+    $('#mtp-run', panel).disabled = true;
+    $('#mtp-copy', panel).disabled = true;
+    $('#mtp-details', panel).hidden = true;
+
+    const checked = Array(photos.length);
+
+    let next = 0;
+    let done = 0;
+
+    status.textContent =
+      `A verificar 0/${photos.length} fotografias...`;
+
+    async function worker() {
+      while (next < photos.length) {
+        const index = next++;
+        const photo = photos[index];
+
+        try {
+          const response = await fetch(photo.url, {
+            method: 'GET',
+            credentials: 'same-origin',
+            redirect: 'follow',
+            cache: 'no-store'
+          });
+
+          if (!response.ok) {
+            throw Error(`HTTP ${response.status}`);
+          }
+
+          if (new URL(response.url).origin !== location.origin) {
+            throw Error('Redirecionamento para outro domínio');
+          }
+
+          checked[index] = inspectPhoto(
+            await response.text(),
+            photo
+          );
+
+        } catch (e) {
+          checked[index] = {
+            ...photo,
+            status: 'NÃO VERIFICÁVEL',
+            missing: [],
+            absent: [],
+            reason: e.message
+          };
+        }
+
+        done++;
+
+        status.textContent =
+          `A verificar ${done}/${photos.length} fotografias...`;
+      }
+    }
+
+    try {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(3, photos.length) },
+          worker
+        )
+      );
+
+      results = checked;
+      render();
+
+      const needsReview = results.filter(
+        r => r.status !== 'COMPLETA'
+      ).length;
+
+      status.textContent =
+        `Auditoria terminada: ${photos.length} fotos, ` +
+        `${needsReview} a rever. Nenhum dado foi alterado.`;
+
+    } finally {
+      running = false;
+
+      $('#mtp-run', panel).disabled = false;
+      $('#mtp-copy', panel).disabled = !results.length;
+    }
+  }
+
+  async function copyReport() {
+    const panel = document.getElementById(PANEL_ID);
+    const button = $('#mtp-copy', panel);
+
+    try {
+      const text = fullReport();
+
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement('textarea');
+
+        area.value = text;
+        area.style.cssText =
+          'position:fixed;left:-9999px;top:0';
+
+        document.body.appendChild(area);
+        area.select();
+
+        const ok = document.execCommand('copy');
+        area.remove();
+
+        if (!ok) throw Error('Falha na cópia');
+      }
+
+      button.textContent = '✓ Relatório copiado';
+
+      setTimeout(() => {
+        if (button.isConnected) {
+          button.textContent = '📋 Copiar relatório';
+        }
+      }, 2500);
+
+    } catch (e) {
+      alert(`Não foi possível copiar: ${e.message}`);
+    }
+  }
+
+  function init() {
+    if (
+      started ||
+      !document.body ||
+      !$$('li.imagenGaleria[data-idimg]').length
+    ) return;
+
+    started = true;
+
+    const panel = document.createElement('aside');
+    panel.id = PANEL_ID;
+
+    panel.style.cssText = [
+      'position:fixed',
+      'left:12px',
+      'top:8px',
+      'width:460px',
+      'max-width:calc(100vw - 24px)',
+      'max-height:80vh',
+      'overflow:auto',
+      'z-index:999999',
+      'padding:14px',
+      'background:#fff',
+      'color:#222',
+      'border:2px solid #444',
+      'border-radius:10px',
+      'box-shadow:0 5px 24px #0004',
+      'font:13px Arial,sans-serif'
+    ].join(';');
+
+    panel.innerHTML = `
+      <strong>Avantio — Auditoria de fotos</strong>
+
+      <div style="margin:10px 0">
+        <button type="button" id="mtp-run">
+          Auditar fotografias
+        </button>
+
+        <button type="button" id="mtp-copy" disabled>
+          📋 Copiar relatório
+        </button>
+
+        <button type="button" id="mtp-close">
+          Fechar
+        </button>
+      </div>
+
+      <p id="mtp-progress">
+        Pronto para verificar.
+      </p>
+
+      <p id="mtp-summary"></p>
+
+      <details id="mtp-details" hidden open>
+        <summary></summary>
+        <ul style="padding-left:22px;line-height:1.5"></ul>
+      </details>
+
+      <small>
+        Somente leitura: não altera nem guarda fotografias.
+      </small>
+    `;
+
+    document.body.appendChild(panel);
+
+    $$('button', panel).forEach(btn => {
+      btn.style.cssText = [
+        'padding:6px 9px',
+        'margin:3px',
+        'border:1px solid #888',
+        'border-radius:5px',
+        'background:#f8f8f8',
+        'cursor:pointer'
+      ].join(';');
+    });
+
+    $('#mtp-run', panel).addEventListener('click', audit);
+
+    $('#mtp-copy', panel).addEventListener(
+      'click',
+      copyReport
+    );
+
+    $('#mtp-close', panel).addEventListener('click', () => {
+      if (running) return;
+      panel.remove();
+      started = false;
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      init,
+      { once: true }
+    );
+  } else {
+    init();
+  }
+
+  const observer = new MutationObserver(() => {
+    if (!started) init();
+  });
+
+  observer.observe(document.documentElement, {
+    subtree: true,
+    childList: true
+  });
+})();

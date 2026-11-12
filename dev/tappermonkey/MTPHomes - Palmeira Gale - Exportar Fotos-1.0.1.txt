@@ -1,0 +1,796 @@
+
+// ==UserScript==
+// @name         MTPHomes - Palmeira Gale | Exportar Fotos
+// @namespace    https://www.mtphomes.pt/
+// @version      1.0.1
+// @description  Exporta fotos pendentes em ZIP com IDs e manifest.
+// @match        https://app.avantio.pro/*
+// @match        https://www.mtphomes.pt/*
+// @match        https://mtphomes.pt/*
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const CFG = {
+    nome: 'Palmeira Galê By MTPhomes',
+    pageId: '3a4e8e19-c14a-81d7-8028-e9a46b0fbda2',
+    listing: 'https://www.mtphomes.pt/aluguer/condominio-albufeira-palmeira-gale-by-mtphomes-708621.html',
+    total: 28,
+    primeiroId: 126909930
+  };
+
+  const PENDENTES = [
+    1, ...Array.from({ length: 20 }, (_, i) => i + 9)
+  ];
+
+  const state = {
+    urls: [],
+    selecionadas: new Set(PENDENTES),
+    origem: '',
+    ocupado: false
+  };
+
+  const el = (tag, text = '') => {
+    const e = document.createElement(tag);
+    if (text) e.textContent = text;
+    return e;
+  };
+
+  const css = (e, s) => Object.assign(e.style, s);
+
+  function urlValida(raw, base = location.href) {
+    try {
+      if (!raw || /^(data|blob|javascript):/i.test(raw)) return '';
+      const limpa = String(raw)
+        .replace(/&amp;/gi, '&')
+        .replace(/\\\//g, '/');
+      const u = new URL(limpa, base);
+      return /^https?:$/.test(u.protocol) ? u.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function pontuacao(url) {
+    const s = url.toLowerCase();
+    let p = 0;
+    if (s.includes('/fotos/')) p += 100;
+    if (/\/big[^/]*\.(jpg|jpeg|png|webp)/.test(s)) p += 20;
+    if (/logo|icon|avatar|sprite/.test(s)) p -= 1000;
+    return p;
+  }
+
+  function imagensDoElemento(node) {
+    const urls = [];
+    const nodes = [
+      node,
+      ...node.querySelectorAll(
+        'img,source,a,[data-src],[data-original],[style]'
+      )
+    ];
+
+    for (const n of nodes.slice(0, 60)) {
+      for (const attr of [
+        'src', 'data-src', 'data-original',
+        'data-lazy-src', 'href'
+      ]) {
+        const u = urlValida(n.getAttribute?.(attr));
+        if (/\.(jpg|jpeg|png|webp)(\?|$)/i.test(u)) {
+          urls.push(u);
+        }
+      }
+
+      const srcset = n.getAttribute?.('srcset') || '';
+      for (const part of srcset.split(',')) {
+        const u = urlValida(part.trim().split(/\s+/)[0]);
+        if (u) urls.push(u);
+      }
+
+      const style = n.getAttribute?.('style') || '';
+      for (const match of style.matchAll(
+        /url\(\s*["']?([^)'"]+)["']?\s*\)/g
+      )) {
+        const u = urlValida(match[1]);
+        if (u) urls.push(u);
+      }
+    }
+
+    return [...new Set(urls)]
+      .sort((a, b) => pontuacao(b) - pontuacao(a));
+  }
+
+  function obterDoAvantio() {
+    const encontrados = new Map();
+
+    const nodes = document.querySelectorAll(
+      '[id],[data-id],[data-photo-id],[name],[onclick],[href]'
+    );
+
+    for (const node of nodes) {
+      const atributos = [...node.attributes]
+        .map(a => a.value).join(' ');
+
+      for (let numero = 1; numero <= CFG.total; numero++) {
+        if (encontrados.has(numero)) continue;
+
+        const id = CFG.primeiroId + numero - 1;
+        const regex = new RegExp('(^|\\D)' + id + '(\\D|$)');
+
+        if (!regex.test(atributos)) continue;
+
+        let atual = node;
+
+        for (let nivel = 0; atual && nivel < 5;
+             atual = atual.parentElement, nivel++) {
+
+          if (atual.querySelectorAll('img').length > 8) break;
+
+          const imagem = imagensDoElemento(atual)[0];
+
+          if (imagem && pontuacao(imagem) > -100) {
+            encontrados.set(numero, imagem);
+            break;
+          }
+        }
+      }
+    }
+
+    return encontrados;
+  }
+
+  function extrairDoHtml(html) {
+    const normalizado = String(html)
+      .replace(/\\u002[fF]/g, '/')
+      .replace(/\\\//g, '/')
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"');
+
+    const regex = /(?:(?:https?:)?\/\/(?:www\.)?mtphomes\.pt)?\/(?:aluguer|[a-z]{2}\/rentals|[a-z]{2}\/alquiler|[a-z]{2}\/location|rentals)\/fotos\/[^\s"'<>`\\]+?\.(?:jpe?g|png|webp)(?:\?[^\s"'<>`\\]*)?/gi;
+
+    const grupos = new Map();
+
+    for (const match of normalizado.matchAll(regex)) {
+      const full = urlValida(match[0], CFG.listing);
+      if (!full) continue;
+
+      const path = new URL(full).pathname;
+      const rel = path.split('/fotos/')[1];
+      if (!rel) continue;
+
+      const partes = rel.split('/');
+      if (partes.length < 3) continue;
+
+      const grupo = partes.slice(0, 2).join('/');
+      const ficheiro = partes.at(-1);
+      const identidade = ficheiro.replace(
+        /^(big|small|medium|thumb|mini|large|original)(?=\d)/i,
+        ''
+      );
+
+      if (!grupos.has(grupo)) grupos.set(grupo, new Map());
+
+      const imagens = grupos.get(grupo);
+      const anterior = imagens.get(identidade);
+
+      if (!anterior || pontuacao(full) > pontuacao(anterior)) {
+        imagens.set(identidade, full);
+      }
+    }
+
+    const candidatos = [...grupos.values()]
+      .map(g => [...g.values()]);
+
+
+const exato =
+  candidatos
+    .map(grupo => grupo.filter(url =>
+      /\/big[^/]*\.(jpg|jpeg|png|webp)$/i.test(
+        new URL(url).pathname
+      )
+    ))
+    .find(grupo => grupo.length === CFG.total)
+  ||
+  candidatos.find(grupo => grupo.length === CFG.total);
+
+
+    if (!exato) {
+      const maior = Math.max(0, ...candidatos.map(a => a.length));
+      throw new Error(
+        `Não encontrei 28 fotos distintas. Maior grupo: ${maior}.`
+      );
+    }
+
+    return exato;
+  }
+
+  function requisicao(url, tipo = 'text') {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: tipo,
+        timeout: 45000,
+        onload: r => {
+          if (r.status >= 200 && r.status < 300) {
+            resolve(r);
+          } else {
+            reject(new Error(`HTTP ${r.status}`));
+          }
+        },
+        onerror: () => reject(new Error('Falha de rede')),
+        ontimeout: () => reject(new Error('Tempo esgotado'))
+      });
+    });
+  }
+
+  let painel, estadoTexto, lista, contador;
+
+  function mensagem(texto, erro = false) {
+    estadoTexto.textContent = texto;
+    estadoTexto.style.color = erro ? '#ffb86b' : '#dce8f3';
+  }
+
+  function botao(texto, callback) {
+    const b = el('button', texto);
+    css(b, {
+      background: '#29445a',
+      color: 'white',
+      border: '1px solid #71899c',
+      borderRadius: '7px',
+      padding: '8px 10px',
+      cursor: 'pointer',
+      fontSize: '12px'
+    });
+    b.addEventListener('click', callback);
+    return b;
+  }
+
+  function renderizar() {
+    lista.replaceChildren();
+
+    contador.textContent = state.urls.length
+      ? `${state.urls.length}/28 imagens | ${state.selecionadas.size} selecionadas`
+      : 'Ainda não analisado';
+
+    if (state.urls.length !== 28) return;
+
+    for (let numero = 1; numero <= 28; numero++) {
+      const url = state.urls[numero - 1];
+      const id = CFG.primeiroId + numero - 1;
+
+      const linha = el('label');
+      css(linha, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '7px',
+        borderBottom: '1px solid #405263',
+        cursor: 'pointer'
+      });
+
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = state.selecionadas.has(numero);
+
+      check.addEventListener('change', () => {
+        if (check.checked) state.selecionadas.add(numero);
+        else state.selecionadas.delete(numero);
+
+        contador.textContent =
+          `28/28 imagens | ${state.selecionadas.size} selecionadas`;
+      });
+
+      const img = document.createElement('img');
+      img.src = url;
+      img.loading = 'lazy';
+      img.alt = `Fotografia ${numero}`;
+      css(img, {
+        width: '75px',
+        height: '55px',
+        objectFit: 'cover',
+        borderRadius: '5px'
+      });
+
+      const info = el('div');
+      css(info, { flex: '1', fontSize: '11px' });
+
+      const titulo = el('strong', `Foto ${numero} — ID ${id}`);
+      const subtitulo = el('div',
+        numero === 1
+          ? 'Faltam apenas os ALT'
+          : numero >= 9
+            ? 'Faltam título, descrição e ALT'
+            : 'Completa no Avantio'
+      );
+
+      css(subtitulo, { color: '#b6c7d4', marginTop: '3px' });
+
+      info.append(titulo, subtitulo);
+
+      const abrir = el('a', 'Abrir');
+      abrir.href = url;
+      abrir.target = '_blank';
+      abrir.rel = 'noopener noreferrer';
+      css(abrir, { color: '#b2ddff', fontSize: '11px' });
+
+      linha.append(check, img, info, abrir);
+      lista.append(linha);
+    }
+  }
+
+  async function analisar() {
+    if (state.ocupado) return;
+    state.ocupado = true;
+
+    mensagem('A localizar as fotografias...');
+
+    try {
+      const fotosAvantio = obterDoAvantio();
+
+      if (
+        fotosAvantio.size === 28 &&
+        new Set(fotosAvantio.values()).size === 28
+      ) {
+        state.urls = Array.from(
+          { length: 28 },
+          (_, i) => fotosAvantio.get(i + 1)
+        );
+        state.origem = 'Avantio — associadas por ID';
+      } else {
+        mensagem(
+          `Avantio: ${fotosAvantio.size}/28. A consultar MTPHomes...`
+        );
+
+        let html;
+
+        if (
+          location.hostname.includes('mtphomes.pt') &&
+          location.pathname.includes('708621')
+        ) {
+          html = document.documentElement.outerHTML;
+        } else {
+          html = (await requisicao(CFG.listing)).responseText;
+        }
+
+        state.urls = extrairDoHtml(html);
+        state.origem = 'MTPHomes — ordem a confirmar';
+      }
+
+      renderizar();
+      mensagem(
+        `${state.origem}. Confirma a ordem das miniaturas antes de exportar.`
+      );
+
+    } catch (e) {
+      state.urls = [];
+      renderizar();
+      mensagem(`Erro: ${e.message}`, true);
+    } finally {
+      state.ocupado = false;
+    }
+  }
+
+  function campos(numero) {
+    if (numero === 1) {
+      return ['pt.alt', 'es.alt', 'en.alt', 'fr.alt'];
+    }
+
+    if (numero >= 9) {
+      return ['pt', 'es', 'en', 'fr'].flatMap(lang => [
+        `${lang}.title`,
+        `${lang}.descricao`,
+        `${lang}.alt`
+      ]);
+    }
+
+    return [];
+  }
+
+  async function imagemBlob(url) {
+    const r = await requisicao(url, 'blob');
+    const blob = r.response instanceof Blob
+      ? r.response : new Blob([r.response]);
+
+    if (!blob.size) throw new Error('Imagem vazia');
+
+    const bytes = new Uint8Array(
+      await blob.slice(0, 12).arrayBuffer()
+    );
+
+    const jpg = bytes[0] === 255 && bytes[1] === 216;
+    const png = bytes[0] === 137 && bytes[1] === 80;
+    const webp =
+      String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+      String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+
+    if (!jpg && !png && !webp) {
+      throw new Error('Resposta recebida não é uma imagem válida');
+    }
+
+    return blob;
+  }
+
+  function extensao(url) {
+    const match = new URL(url).pathname.match(
+      /\.(jpg|jpeg|png|webp)$/i
+    );
+    if (!match) return '.jpg';
+    return '.' + (match[1].toLowerCase() === 'jpeg'
+      ? 'jpg' : match[1].toLowerCase());
+  }
+
+  async function recolherFicheiros() {
+    if (state.urls.length !== 28) {
+      throw new Error('Primeiro clica em Analisar');
+    }
+
+    const numeros = [...state.selecionadas]
+      .sort((a, b) => a - b);
+
+    if (!numeros.length) {
+      throw new Error('Nenhuma fotografia selecionada');
+    }
+
+    const ficheiros = [];
+
+    const manifest = {
+      alojamento: CFG.nome,
+      pageId: CFG.pageId,
+      urlAnuncio: CFG.listing,
+      totalFotos: CFG.total,
+      origem: state.origem,
+      aviso: 'Confirmar ordem e correspondência com Avantio.',
+      fotos: []
+    };
+
+    for (let i = 0; i < numeros.length; i++) {
+      const numero = numeros[i];
+      const url = state.urls[numero - 1];
+      const id = CFG.primeiroId + numero - 1;
+
+      mensagem(
+        `A descarregar ${i + 1}/${numeros.length}: foto ${numero}`
+      );
+
+      const blob = await imagemBlob(url);
+
+      const nome =
+        `${String(numero).padStart(2, '0')}_ID${id}${extensao(url)}`;
+
+      ficheiros.push({ nome, blob });
+
+      manifest.fotos.push({
+        numero,
+        idAvantio: id,
+        ficheiro: nome,
+        url,
+        camposEmFalta: campos(numero)
+      });
+    }
+
+    ficheiros.push({
+      nome: 'manifest.json',
+      blob: new Blob(
+        [JSON.stringify(manifest, null, 2)],
+        { type: 'application/json' }
+      )
+    });
+
+    return ficheiros;
+  }
+
+  function crc32(bytes) {
+    let crc = -1;
+
+    for (const b of bytes) {
+      crc ^= b;
+      for (let k = 0; k < 8; k++) {
+        crc = (crc >>> 1) ^
+          ((crc & 1) ? 0xedb88320 : 0);
+      }
+    }
+
+    return (crc ^ -1) >>> 0;
+  }
+
+  function put16(b, i, v) {
+    b[i] = v & 255;
+    b[i + 1] = (v >>> 8) & 255;
+  }
+
+  function put32(b, i, v) {
+    put16(b, i, v);
+    put16(b, i + 2, v >>> 16);
+  }
+
+  async function criarZip(ficheiros) {
+    const encoder = new TextEncoder();
+    const partes = [];
+    const diretorio = [];
+
+    let offset = 0;
+    let tamanhoDiretorio = 0;
+
+    for (const ficheiro of ficheiros) {
+      const nome = encoder.encode(ficheiro.nome);
+      const dados = new Uint8Array(
+        await ficheiro.blob.arrayBuffer()
+      );
+      const crc = crc32(dados);
+
+      const local = new Uint8Array(30 + nome.length);
+
+      put32(local, 0, 0x04034b50);
+      put16(local, 4, 20);
+      put16(local, 6, 0x0800);
+      put16(local, 8, 0);
+      put32(local, 14, crc);
+      put32(local, 18, dados.length);
+      put32(local, 22, dados.length);
+      put16(local, 26, nome.length);
+      local.set(nome, 30);
+
+      partes.push(local, dados);
+
+      const dir = new Uint8Array(46 + nome.length);
+
+      put32(dir, 0, 0x02014b50);
+      put16(dir, 4, 20);
+      put16(dir, 6, 20);
+      put16(dir, 8, 0x0800);
+      put16(dir, 10, 0);
+      put32(dir, 16, crc);
+      put32(dir, 20, dados.length);
+      put32(dir, 24, dados.length);
+      put16(dir, 28, nome.length);
+      put32(dir, 42, offset);
+      dir.set(nome, 46);
+
+      diretorio.push(dir);
+      tamanhoDiretorio += dir.length;
+      offset += local.length + dados.length;
+    }
+
+    const final = new Uint8Array(22);
+
+    put32(final, 0, 0x06054b50);
+    put16(final, 8, ficheiros.length);
+    put16(final, 10, ficheiros.length);
+    put32(final, 12, tamanhoDiretorio);
+    put32(final, 16, offset);
+
+    return new Blob(
+      [...partes, ...diretorio, final],
+      { type: 'application/zip' }
+    );
+  }
+
+  function descarregar(blob, nome) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+
+    a.href = url;
+    a.download = nome;
+
+    document.body.append(a);
+    a.click();
+    a.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  async function exportarZip() {
+    if (state.ocupado) return;
+    state.ocupado = true;
+
+    try {
+      const ficheiros = await recolherFicheiros();
+
+      mensagem('A construir ZIP...');
+
+      const zip = await criarZip(ficheiros);
+
+      descarregar(zip, 'Palmeira_Gale_Fotos_Pendentes.zip');
+
+      mensagem(
+        `ZIP criado: ${ficheiros.length - 1} imagens + manifest.json`
+      );
+
+    } catch (e) {
+      mensagem(`Erro: ${e.message}`, true);
+    } finally {
+      state.ocupado = false;
+    }
+  }
+
+  async function exportarPasta() {
+    if (state.ocupado) return;
+
+    if (typeof window.showDirectoryPicker !== 'function') {
+      mensagem('Usa a opção Descarregar ZIP.', true);
+      return;
+    }
+
+    let pastaMae;
+
+    try {
+      pastaMae = await window.showDirectoryPicker({
+        mode: 'readwrite'
+      });
+    } catch (e) {
+      if (e.name !== 'AbortError') mensagem(e.message, true);
+      return;
+    }
+
+    state.ocupado = true;
+
+    try {
+      const pasta = await pastaMae.getDirectoryHandle(
+        'Palmeira_Gale_Fotos_Pendentes',
+        { create: true }
+      );
+
+      const ficheiros = await recolherFicheiros();
+
+      for (let i = 0; i < ficheiros.length; i++) {
+        const f = ficheiros[i];
+
+        mensagem(`A guardar ${i + 1}/${ficheiros.length}`);
+
+        const handle = await pasta.getFileHandle(
+          f.nome, { create: true }
+        );
+
+        const writer = await handle.createWritable();
+        await writer.write(f.blob);
+        await writer.close();
+      }
+
+      mensagem('Fotografias guardadas na pasta!');
+
+    } catch (e) {
+      mensagem(`Erro: ${e.message}`, true);
+    } finally {
+      state.ocupado = false;
+    }
+  }
+
+  // INTERFACE
+
+  const abrir = botao('🌴 Extrair fotos', () => {
+    painel.hidden = !painel.hidden;
+  });
+
+  css(abrir, {
+    position: 'fixed',
+    bottom: '18px',
+    left: '18px',
+    zIndex: '2147483647',
+    background: '#1c3547',
+    boxShadow: '0 4px 18px #0007'
+  });
+
+  painel = el('section');
+  painel.hidden = true;
+
+  css(painel, {
+    position: 'fixed',
+    bottom: '60px',
+    left: '18px',
+    width: '380px',
+    maxWidth: 'calc(100vw - 36px)',
+    maxHeight: '80vh',
+    overflow: 'auto',
+    zIndex: '2147483647',
+    background: '#122635',
+    color: 'white',
+    border: '1px solid #7891a6',
+    borderRadius: '10px',
+    padding: '12px',
+    boxShadow: '0 6px 24px #0009',
+    font: '13px system-ui, sans-serif'
+  });
+
+  const titulo = el(
+    'div',
+    '🌴 PALMEIRA GALÊ — EXTRATOR'
+  );
+
+  css(titulo, {
+    fontWeight: 'bold',
+    fontSize: '15px',
+    marginBottom: '8px'
+  });
+
+  const explicacao = el(
+    'div',
+    'Foto 1: ALT | Fotos 9–28: título, descrição e ALT'
+  );
+
+  css(explicacao, {
+    fontSize: '11px',
+    color: '#baccda',
+    marginBottom: '10px'
+  });
+
+  contador = el('div', 'Ainda não analisado');
+
+  css(contador, {
+    fontSize: '12px',
+    marginBottom: '8px'
+  });
+
+  estadoTexto = el(
+    'div',
+    'Clica em Analisar para localizar as fotografias.'
+  );
+
+  css(estadoTexto, {
+    fontSize: '11px',
+    marginBottom: '10px',
+    lineHeight: '1.5'
+  });
+
+  const acoes = el('div');
+
+  css(acoes, {
+    display: 'flex',
+    gap: '6px',
+    flexWrap: 'wrap',
+    marginBottom: '8px'
+  });
+
+  acoes.append(
+    botao('Analisar', analisar),
+    botao('Só pendentes', () => {
+      state.selecionadas = new Set(PENDENTES);
+      renderizar();
+    }),
+    botao('Todas 28', () => {
+      state.selecionadas = new Set(
+        Array.from({ length: 28 }, (_, i) => i + 1)
+      );
+      renderizar();
+    })
+  );
+
+  const exportacoes = el('div');
+
+  css(exportacoes, {
+    display: 'flex',
+    gap: '6px',
+    flexWrap: 'wrap',
+    marginBottom: '10px'
+  });
+
+  exportacoes.append(
+    botao('Descarregar ZIP', exportarZip),
+    botao('Guardar numa pasta', exportarPasta)
+  );
+
+  lista = el('div');
+
+  css(lista, {
+    maxHeight: '45vh',
+    overflow: 'auto',
+    border: '1px solid #384d5a',
+    borderRadius: '6px'
+  });
+
+  painel.append(
+    titulo,
+    explicacao,
+    contador,
+    estadoTexto,
+    acoes,
+    exportacoes,
+    lista
+  );
+
+  document.body.append(abrir, painel);
+
+})();
